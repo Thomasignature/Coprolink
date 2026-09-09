@@ -1,0 +1,12 @@
+{
+  "name": "CoproLink",
+  "short_name": "CoproLink",
+  "description": "Le lien numérique permanent de la copropriété.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f3ee",
+  "theme_color": "#10231f",
+  "icons": [
+    {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}
