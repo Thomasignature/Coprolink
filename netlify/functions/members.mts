@@ -1,4 +1,5 @@
 import type { Config, Context } from "@netlify/functions";
+import { requestPasswordRecovery } from "@netlify/identity";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { buildingMembers, pendingMembers, ROLES, users, type Role } from "../../db/schema.js";
@@ -409,9 +410,11 @@ export default async (req: Request, context: Context) => {
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
 
-      // Renvoi d'invitation : action distincte du changement de rôle, elle ne
-      // touche pas l'appartenance. Sans elle, un e-mail perdu serait une
-      // impasse pour le syndic.
+      // Netlify Identity refuse de rappeler /invite pour une adresse déjà
+      // enregistrée, même si l'invitation initiale n'a jamais été acceptée.
+      // Pour un compte existant mais non activé, le flux de récupération émet
+      // un nouveau lien ; son callback confirme le compte et permet de choisir
+      // le mot de passe sans changer l'identifiant Identity ni l'appartenance.
       if (body.resendInvite === true) {
         const [account] = await db
           .select({ email: users.email, fullName: users.fullName })
@@ -420,8 +423,23 @@ export default async (req: Request, context: Context) => {
           .limit(1);
         if (!account) throw new HttpError(404, "Compte introuvable");
 
-        const { account: identity } = await lookupAccountByEmail(account.email);
-        if (identity?.activated) {
+        const identityLookup = await lookupAccountByEmail(account.email);
+        if (identityLookup.unavailable) {
+          console.error("Vérification du compte Identity impossible:", identityLookup.unavailable);
+          throw new HttpError(
+            503,
+            "Impossible de vérifier l'état du compte pour le moment. Réessayez dans quelques instants.",
+          );
+        }
+
+        const identity = identityLookup.account;
+        if (!identity) {
+          throw new HttpError(
+            409,
+            "Le compte d'authentification n'existe plus. Retirez ce copropriétaire puis ajoutez-le à nouveau.",
+          );
+        }
+        if (identity.activated) {
           throw new HttpError(
             409,
             "Ce compte est déjà activé. La personne doit utiliser « Mot de passe oublié » sur l'écran de connexion.",
@@ -429,37 +447,35 @@ export default async (req: Request, context: Context) => {
         }
 
         try {
-          await inviteAccount(account.email, account.fullName);
+          await requestPasswordRecovery(account.email);
         } catch (error) {
-          if (error instanceof IdentityEmailTakenError) {
+          const detail = error instanceof Error ? error.message : String(error ?? "");
+          console.error("Renvoi du lien d'activation impossible:", detail);
+          if (/rate|too many|429/i.test(detail)) {
             throw new HttpError(
-              409,
-              "Ce compte est déjà activé. La personne doit utiliser « Mot de passe oublié » sur l'écran de connexion.",
+              429,
+              "Un lien d'activation a déjà été envoyé récemment. Réessayez dans quelques minutes.",
             );
           }
-          if (error instanceof IdentityAdminUnavailableError) {
-            console.error("Renvoi d'invitation impossible:", error.message);
-            throw new HttpError(
-              503,
-              "L'envoi d'e-mails d'invitation n'est pas disponible pour le moment. " +
-                "La personne peut se connecter avec « Mot de passe oublié » pour recevoir un lien.",
-            );
-          }
-          throw error;
+          throw new HttpError(
+            503,
+            "Impossible d'envoyer le lien d'activation pour le moment. Réessayez dans quelques instants.",
+          );
         }
 
         await writeAudit(ctx, {
           action: "member.reinvited",
           entityType: "building_member",
           entityId: target.id,
-          summary: `Invitation renvoyée à ${account.email}.`,
+          summary: `Lien d'activation renvoyé à ${account.email}.`,
         });
 
         return Response.json({
           id: target.id,
           email: account.email,
-          invited: true,
-          message: `Invitation renvoyée à ${account.email}.`,
+          invited: false,
+          activationEmailSent: true,
+          message: `Lien d'activation envoyé à ${account.email}. La personne pourra choisir son mot de passe depuis le lien reçu.`,
         });
       }
 
