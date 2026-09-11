@@ -1,14 +1,19 @@
 import type { Config, Context } from "@netlify/functions";
-import { admin } from "@netlify/identity";
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { buildingMembers, ROLES, users, type Role } from "../../db/schema.js";
 import { authorize, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { findAccountByEmail, inviteAccount, listActivationStates } from "../lib/identity.mts";
 import { readString, writeAudit } from "../lib/data.mts";
 
 /**
  * Gestion des appartenances à un immeuble — c'est ici que les rôles réels sont
  * attribués. Réservé à `members:manage` (gestionnaire).
+ *
+ * Le POST est volontairement une action unique pour le syndic : il crée le
+ * compte Netlify Identity si l'adresse n'en a pas encore, déclenche l'e-mail
+ * d'activation, et accorde le rôle sur l'immeuble. Rien à faire dans le tableau
+ * de bord Netlify.
  *
  * `platform_admin` n'est volontairement PAS attribuable ici : ce rôle vit dans
  * `app_metadata.roles` de Netlify Identity et se règle depuis l'interface
@@ -21,19 +26,6 @@ const assertAssignableRole = (value: unknown): Role => {
     throw new HttpError(422, `Rôle attendu parmi : ${ASSIGNABLE_ROLES.join(", ")}`);
   }
   return value as Role;
-};
-
-/** Retrouve un compte Identity par e-mail. L'utilisateur doit déjà être invité. */
-const findIdentityUserByEmail = async (email: string) => {
-  const needle = email.toLowerCase();
-  for (let page = 1; page <= 10; page += 1) {
-    const batch = await admin.listUsers({ page, perPage: 100 });
-    if (!batch || batch.length === 0) return null;
-    const match = batch.find((u) => (u.email ?? "").toLowerCase() === needle);
-    if (match) return match;
-    if (batch.length < 100) return null;
-  }
-  return null;
 };
 
 const countManagers = async (buildingId: number, excludeMemberId?: number) => {
@@ -63,6 +55,7 @@ export default async (req: Request, context: Context) => {
       const rows = await db
         .select({
           id: buildingMembers.id,
+          userId: buildingMembers.userId,
           email: users.email,
           fullName: users.fullName,
           role: buildingMembers.role,
@@ -73,38 +66,51 @@ export default async (req: Request, context: Context) => {
         .innerJoin(users, eq(buildingMembers.userId, users.id))
         .where(eq(buildingMembers.buildingId, ctx.buildingId));
 
-      return Response.json({ members: rows, assignableRoles: ASSIGNABLE_ROLES }, {
-        headers: { "cache-control": "no-store" },
-      });
+      // L'état d'activation vient d'Identity. S'il est indisponible, la liste
+      // reste affichable : `activated` passe à `null` et l'interface n'affiche
+      // simplement aucun badge, plutôt que de faire échouer la page entière.
+      const activation = await listActivationStates().catch(() => null);
+
+      return Response.json(
+        {
+          members: rows.map(({ userId, ...member }) => ({
+            ...member,
+            activated: activation ? (activation.get(userId) ?? false) : null,
+          })),
+          assignableRoles: ASSIGNABLE_ROLES,
+        },
+        { headers: { "cache-control": "no-store" } },
+      );
     }
 
     if (req.method === "POST") {
       const body = await req.json().catch(() => ({}));
       const email = readString(body.email, "e-mail", { max: 200 }).toLowerCase();
+      const fullName = readString(body.fullName, "nom", { max: 120, required: false });
       const role = assertAssignableRole(body.role ?? "resident");
       const unitLabel = readString(body.unitLabel, "lot", { max: 80, required: false });
       const shareLabel = readString(body.shareLabel, "quotité", { max: 40, required: false });
 
-      const identityUser = await findIdentityUserByEmail(email);
-      if (!identityUser) {
-        throw new HttpError(
-          404,
-          "Aucun compte Netlify Identity pour cet e-mail. Invitez d'abord la personne depuis l'onglet Identity de Netlify.",
-        );
-      }
+      // Un compte existant n'est jamais réinvité : cela enverrait un e-mail
+      // d'activation à quelqu'un qui a déjà un mot de passe en cours d'usage.
+      const existing = await findAccountByEmail(email);
+      const account = existing ?? (await inviteAccount(email, fullName));
 
       await db
         .insert(users)
         .values({
-          id: identityUser.id,
-          email: identityUser.email ?? email,
-          fullName: identityUser.name ?? (identityUser.userMetadata?.full_name as string | undefined) ?? "",
+          id: account.id,
+          email: account.email || email,
+          fullName: account.fullName || fullName,
         })
-        .onConflictDoUpdate({ target: users.id, set: { email: identityUser.email ?? email } });
+        .onConflictDoUpdate({
+          target: users.id,
+          set: { email: account.email || email },
+        });
 
       const [member] = await db
         .insert(buildingMembers)
-        .values({ buildingId: ctx.buildingId, userId: identityUser.id, role, unitLabel, shareLabel })
+        .values({ buildingId: ctx.buildingId, userId: account.id, role, unitLabel, shareLabel })
         .onConflictDoUpdate({
           target: [buildingMembers.buildingId, buildingMembers.userId],
           set: { role, unitLabel, shareLabel },
@@ -112,13 +118,26 @@ export default async (req: Request, context: Context) => {
         .returning();
 
       await writeAudit(ctx, {
-        action: "member.granted",
+        action: existing ? "member.granted" : "member.invited",
         entityType: "building_member",
         entityId: member.id,
-        summary: `Accès « ${role} » accordé à ${email}.`,
+        summary: existing
+          ? `Accès « ${role} » accordé à ${email}.`
+          : `${email} invité avec le rôle « ${role} ».`,
       });
 
-      return Response.json({ id: member.id, email, role: member.role, unitLabel: member.unitLabel }, { status: 201 });
+      return Response.json(
+        {
+          id: member.id,
+          email,
+          role: member.role,
+          unitLabel: member.unitLabel,
+          /** `true` quand un compte vient d'être créé et l'e-mail envoyé. */
+          invited: existing === null,
+          activated: account.activated,
+        },
+        { status: 201 },
+      );
     }
 
     const memberId = Number(context.params.id);
@@ -132,6 +151,37 @@ export default async (req: Request, context: Context) => {
 
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
+
+      // Renvoi d'invitation : action distincte du changement de rôle, elle ne
+      // touche pas l'appartenance. Sans elle, un e-mail perdu serait une
+      // impasse pour le syndic.
+      if (body.resendInvite === true) {
+        const [account] = await db
+          .select({ email: users.email, fullName: users.fullName })
+          .from(users)
+          .where(eq(users.id, target.userId))
+          .limit(1);
+        if (!account) throw new HttpError(404, "Compte introuvable");
+
+        const identity = await findAccountByEmail(account.email);
+        if (identity?.activated) {
+          throw new HttpError(
+            409,
+            "Ce compte est déjà activé. La personne doit utiliser « Mot de passe oublié » sur l'écran de connexion.",
+          );
+        }
+
+        await inviteAccount(account.email, account.fullName);
+        await writeAudit(ctx, {
+          action: "member.reinvited",
+          entityType: "building_member",
+          entityId: target.id,
+          summary: `Invitation renvoyée à ${account.email}.`,
+        });
+
+        return Response.json({ id: target.id, email: account.email, invited: true });
+      }
+
       const role = assertAssignableRole(body.role ?? target.role);
 
       // Garde-fou : ne jamais laisser un immeuble sans gestionnaire.
