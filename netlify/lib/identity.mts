@@ -7,14 +7,6 @@ import { HttpError } from "./auth.mts";
  * Identity reste la source de vérité de l'authentification ; ce module ne fait
  * que créer et retrouver des comptes. Le rôle applicatif ne s'écrit jamais ici :
  * il vit dans `building_members` (voir auth.mts).
- *
- * Règle de ce module : aucune erreur brute ne sort d'ici. Les opérations
- * d'administration dépendent du jeton opérateur injecté par le runtime Netlify,
- * qui peut manquer (Identity pas encore activé sur le déploiement, jeton rejeté,
- * endpoint injoignable). Dans ce cas la faute est signalée par
- * `IdentityAdminUnavailableError`, que l'appelant sait traiter — sans quoi elle
- * se transformerait en « Erreur interne » côté interface, ce qui n'apprend rien
- * au syndic et donne l'impression que l'ajout d'un copropriétaire est cassé.
  */
 
 export type IdentityAccount = {
@@ -25,7 +17,6 @@ export type IdentityAccount = {
   activated: boolean;
 };
 
-/** L'API d'administration Identity n'est pas utilisable sur cette invocation. */
 export class IdentityAdminUnavailableError extends Error {
   detail: string;
   constructor(detail: string) {
@@ -35,7 +26,6 @@ export class IdentityAdminUnavailableError extends Error {
   }
 }
 
-/** Identity refuse l'invitation : l'adresse a déjà un compte. */
 export class IdentityEmailTakenError extends Error {
   constructor(email: string) {
     super(`Un compte Identity existe déjà pour ${email}.`);
@@ -43,8 +33,14 @@ export class IdentityEmailTakenError extends Error {
   }
 }
 
+export class IdentityRateLimitError extends Error {
+  constructor() {
+    super("Trop de demandes d'e-mail Identity ont été effectuées récemment.");
+    this.name = "IdentityRateLimitError";
+  }
+}
+
 const PAGE_SIZE = 100;
-/** Garde-fou de pagination : une copropriété n'a pas 2 000 comptes. */
 const MAX_PAGES = 20;
 
 const toAccount = (user: User): IdentityAccount => ({
@@ -59,13 +55,14 @@ const describeFailure = (error: unknown) => {
   return message.trim() || "cause inconnue";
 };
 
-/**
- * Point d'accès Identity + jeton opérateur, ou refus explicite.
- *
- * Le jeton n'existe que dans le contexte d'une fonction Netlify : il ne peut
- * donc jamais venir du navigateur, et c'est ce qui rend la création de comptes
- * sûre depuis l'espace syndic.
- */
+const requireIdentityUrl = () => {
+  const config = getIdentityConfig();
+  if (!config?.url) {
+    throw new IdentityAdminUnavailableError("aucun point d'accès Identity n'est exposé sur ce déploiement");
+  }
+  return config.url;
+};
+
 const requireAdminConfig = () => {
   const config = getIdentityConfig();
   if (!config?.url) {
@@ -77,7 +74,6 @@ const requireAdminConfig = () => {
   return { url: config.url, token: config.token };
 };
 
-/** Tous les comptes Identity du projet, pagination comprise. */
 const listIdentityUsers = async (): Promise<User[]> => {
   requireAdminConfig();
 
@@ -85,8 +81,6 @@ const listIdentityUsers = async (): Promise<User[]> => {
   try {
     for (let page = 1; page <= MAX_PAGES; page += 1) {
       const batch = await admin.listUsers({ page, perPage: PAGE_SIZE });
-      // Une réponse sans tableau d'utilisateurs n'est pas une erreur fatale :
-      // on s'arrête simplement là où la pagination s'arrête.
       if (!Array.isArray(batch) || batch.length === 0) break;
       users.push(...batch);
       if (batch.length < PAGE_SIZE) break;
@@ -97,18 +91,12 @@ const listIdentityUsers = async (): Promise<User[]> => {
   return users;
 };
 
-/** @throws {IdentityAdminUnavailableError} si l'API d'administration est hors service. */
 export const findAccountByEmail = async (email: string): Promise<IdentityAccount | null> => {
   const needle = email.toLowerCase();
   const match = (await listIdentityUsers()).find((u) => (u.email ?? "").toLowerCase() === needle);
   return match ? toAccount(match) : null;
 };
 
-/**
- * Variante tolérante : ne lève jamais. `unavailable` porte la raison lorsque la
- * recherche n'a pas pu aboutir, pour que l'appelant choisisse une solution de
- * repli plutôt que d'échouer.
- */
 export const lookupAccountByEmail = async (
   email: string,
 ): Promise<{ account: IdentityAccount | null; unavailable: string | null }> => {
@@ -120,7 +108,6 @@ export const lookupAccountByEmail = async (
   }
 };
 
-/** État d'activation de chaque compte, indexé par identifiant Identity. */
 export const listActivationStates = async (): Promise<Map<string, boolean>> => {
   const states = new Map<string, boolean>();
   for (const user of await listIdentityUsers()) states.set(user.id, Boolean(user.confirmedAt));
@@ -128,21 +115,43 @@ export const listActivationStates = async (): Promise<Map<string, boolean>> => {
 };
 
 /**
- * Crée le compte et déclenche l'e-mail d'invitation.
+ * Envoie un nouveau lien à un compte Identity existant.
  *
- * `/invite` exige le jeton opérateur, qui n'existe que dans une fonction
- * Netlify — cet appel ne peut donc jamais venir du navigateur. C'est le seul
- * point de création de compte offert au syndic, et c'est volontaire : il
- * fonctionne même lorsque les inscriptions libres sont désactivées, et la
- * personne choisit son mot de passe depuis le lien reçu, de sorte qu'aucun mot
- * de passe provisoire ne circule par un autre canal.
- *
- * Relancé sur une adresse déjà invitée mais non activée, il renvoie simplement
- * l'e-mail.
- *
- * @throws {IdentityEmailTakenError} si l'adresse possède déjà un compte.
- * @throws {IdentityAdminUnavailableError} si l'invitation n'a pas pu être tentée.
+ * Netlify refuse `/invite` lorsqu'une adresse existe déjà, y compris si le compte
+ * n'a jamais été activé. `/recover` est donc utilisé pour le renvoi : lors de
+ * l'ouverture du lien, GoTrue confirme aussi un compte qui ne l'était pas encore,
+ * puis CoproLink laisse la personne choisir son mot de passe.
  */
+export const sendAccountActivationLink = async (email: string): Promise<void> => {
+  const url = requireIdentityUrl();
+
+  let response: Response;
+  try {
+    response = await fetch(`${url}/recover`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ email }),
+    });
+  } catch (error) {
+    throw new IdentityAdminUnavailableError(describeFailure(error));
+  }
+
+  if (response.ok) return;
+
+  const detail = (await response.json().catch(() => null)) as { msg?: string; error_description?: string } | null;
+  const message = detail?.msg ?? detail?.error_description ?? "";
+
+  if (response.status === 429 || /rate limit|too many/i.test(message)) {
+    throw new IdentityRateLimitError();
+  }
+
+  if (response.status >= 500) {
+    throw new IdentityAdminUnavailableError(`Identity a répondu ${response.status} ${message}`.trim());
+  }
+
+  throw new HttpError(422, message || `L'envoi du lien d'activation a échoué (${response.status}).`);
+};
+
 export const inviteAccount = async (email: string, fullName: string): Promise<IdentityAccount> => {
   const { url, token } = requireAdminConfig();
 
@@ -163,9 +172,6 @@ export const inviteAccount = async (email: string, fullName: string): Promise<Id
 
     if (/already|exist|registered|taken/i.test(message)) throw new IdentityEmailTakenError(email);
 
-    // 401/403 = jeton opérateur refusé, 5xx = Identity en difficulté : dans les
-    // deux cas l'adresse n'est pas en cause, et l'appelant peut se rabattre sur
-    // une invitation en attente plutôt que de perdre la demande du syndic.
     if (response.status === 401 || response.status === 403 || response.status >= 500) {
       throw new IdentityAdminUnavailableError(`Identity a répondu ${response.status} ${message}`.trim());
     }
@@ -183,8 +189,6 @@ export const inviteAccount = async (email: string, fullName: string): Promise<Id
     };
   }
 
-  // Corps de réponse inexploitable : l'invitation est partie, on relit le compte
-  // pour récupérer son identifiant, indispensable à la clé étrangère.
   const account = await findAccountByEmail(email);
   if (!account) {
     throw new IdentityAdminUnavailableError("l'invitation est partie mais le compte n'a pas pu être relu");
