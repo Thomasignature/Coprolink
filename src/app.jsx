@@ -222,7 +222,8 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
     setTerminalReporting: (id, canReport) => api.setTerminalReporting(slug, id, canReport),
     revokeTerminal: id => api.revokeTerminal(slug, id),
     listMembers: () => api.listMembers(slug),
-    addMember: payload => api.addMember(slug, payload),
+    inviteMember: payload => api.inviteMember(slug, payload),
+    resendMemberInvite: id => api.resendMemberInvite(slug, id),
     updateMember: (id, payload) => api.updateMember(slug, id, payload),
     removeMember: id => api.removeMember(slug, id),
   }), [slug, load])

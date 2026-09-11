@@ -1030,9 +1030,9 @@ function MembersPanel({ actions, setToast }) {
   const add = async e => {
     e.preventDefault()
     try {
-      await actions.addMember({ email: email.trim(), role, unitLabel: unitLabel.trim() })
+      const result = await actions.inviteMember({ email: email.trim(), role, unitLabel: unitLabel.trim() })
       setEmail(''); setUnitLabel('')
-      setToast('Accès accordé')
+      setToast(result?.invited ? `Invitation envoyée à ${result.email}` : 'Accès accordé')
       reload()
     } catch (error) { setToast(error.message) }
   }

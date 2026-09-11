@@ -89,8 +89,11 @@ export const api = {
     request(`/api/terminals/${id}${buildingQuery(slug)}`, { method: 'DELETE' }),
 
   listMembers: slug => request(`/api/members${buildingQuery(slug)}`),
-  addMember: (slug, data) =>
+  /** Crée le compte Identity si besoin, envoie l'invitation et accorde le rôle. */
+  inviteMember: (slug, data) =>
     request(`/api/members${buildingQuery(slug)}`, { method: 'POST', body: data }),
+  resendMemberInvite: (slug, id) =>
+    request(`/api/members/${id}${buildingQuery(slug)}`, { method: 'PATCH', body: { resendInvite: true } }),
   updateMember: (slug, id, data) =>
     request(`/api/members/${id}${buildingQuery(slug)}`, { method: 'PATCH', body: data }),
   removeMember: (slug, id) =>
