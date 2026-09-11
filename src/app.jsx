@@ -224,6 +224,8 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
     listMembers: () => api.listMembers(slug),
     inviteMember: payload => api.inviteMember(slug, payload),
     resendMemberInvite: id => api.resendMemberInvite(slug, id),
+    retryPendingInvite: pendingId => api.retryPendingInvite(slug, pendingId),
+    cancelPendingInvite: pendingId => api.cancelPendingInvite(slug, pendingId),
     updateMember: (id, payload) => api.updateMember(slug, id, payload),
     removeMember: id => api.removeMember(slug, id),
   }), [slug, load])

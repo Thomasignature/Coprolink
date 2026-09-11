@@ -1010,18 +1010,31 @@ function TerminalsPanel({ actions, setToast }) {
 }
 
 function MembersPanel({ actions, setToast }) {
-  const [state, setState] = useState({ loading: true, error: null, members: [], roles: [] })
+  const [state, setState] = useState({
+    loading: true, error: null, members: [], pending: [], roles: [], identityAdminAvailable: true,
+  })
   const [email, setEmail] = useState('')
+  const [fullName, setFullName] = useState('')
   const [role, setRole] = useState('resident')
   const [unitLabel, setUnitLabel] = useState('')
+  const [busy, setBusy] = useState(false)
 
   const reload = async () => {
     setState(s => ({ ...s, loading: true }))
     try {
       const data = await actions.listMembers()
-      setState({ loading: false, error: null, members: data.members, roles: data.assignableRoles })
+      setState({
+        loading: false,
+        error: null,
+        members: data.members,
+        pending: data.pendingMembers ?? [],
+        roles: data.assignableRoles,
+        identityAdminAvailable: data.identityAdminAvailable !== false,
+      })
     } catch (error) {
-      setState({ loading: false, error: error.message, members: [], roles: [] })
+      setState({
+        loading: false, error: error.message, members: [], pending: [], roles: [], identityAdminAvailable: true,
+      })
     }
   }
 
@@ -1029,12 +1042,23 @@ function MembersPanel({ actions, setToast }) {
 
   const add = async e => {
     e.preventDefault()
+    if (busy) return
+    setBusy(true)
     try {
-      const result = await actions.inviteMember({ email: email.trim(), role, unitLabel: unitLabel.trim() })
-      setEmail(''); setUnitLabel('')
-      setToast(result?.invited ? `Invitation envoyée à ${result.email}` : 'Accès accordé')
+      const result = await actions.inviteMember({
+        email: email.trim(), fullName: fullName.trim(), role, unitLabel: unitLabel.trim(),
+      })
+      setEmail(''); setFullName(''); setUnitLabel('')
+      // Le serveur formule lui-même le résultat : compte créé et invitation
+      // envoyée, accès accordé à un compte existant, ou mise en attente.
+      setToast(result?.message || 'Accès accordé')
       reload()
-    } catch (error) { setToast(error.message) }
+    } catch (error) {
+      setToast(error.message)
+      reload()
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -1049,17 +1073,25 @@ function MembersPanel({ actions, setToast }) {
       <div className="notice-inline">
         <Info size={16} />
         <span>
-          La personne doit déjà posséder un compte : invitez-la depuis l'onglet Identity de Netlify,
-          puis accordez-lui un rôle ici.
+          {state.identityAdminAvailable
+            ? `Indiquez simplement l'adresse e-mail : le compte est créé automatiquement et la personne
+               reçoit une invitation pour choisir son mot de passe. Rien à faire ailleurs.`
+            : `L'envoi automatique d'invitations est momentanément indisponible. Les personnes ajoutées
+               ici sont enregistrées comme copropriétaires en attente : leur accès s'active dès leur
+               première connexion avec cette adresse, via « Créer un compte » sur l'écran de connexion.`}
         </span>
       </div>
 
       <section className="card">
-        <div className="card-head"><div><span className="overline">Nouvel accès</span><h3>Accorder un rôle</h3></div></div>
+        <div className="card-head"><div><span className="overline">Nouvel accès</span><h3>Inviter un copropriétaire</h3></div></div>
         <form className="inline-form" onSubmit={add}>
           <label className="grow">
-            E-mail du compte
+            E-mail
             <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="personne@exemple.be" required />
+          </label>
+          <label>
+            Nom <small>(facultatif)</small>
+            <input value={fullName} onChange={e => setFullName(e.target.value)} placeholder="Claire Dubois" maxLength={120} />
           </label>
           <label>
             Rôle
@@ -1073,9 +1105,53 @@ function MembersPanel({ actions, setToast }) {
             Lot
             <input value={unitLabel} onChange={e => setUnitLabel(e.target.value)} placeholder="Appartement B23" maxLength={80} />
           </label>
-          <button className="primary-btn"><Plus /> Accorder</button>
+          <button className="primary-btn" disabled={busy}><Plus /> {busy ? 'Envoi…' : 'Inviter'}</button>
         </form>
       </section>
+
+      {state.pending.length > 0 && (
+        <section className="card table-card">
+          <div className="card-head">
+            <div>
+              <span className="overline">En attente</span><h3>Accès préparés</h3>
+              <p className="subtle">
+                L'accès devient actif à la première connexion de ces adresses. Relancez l'invitation
+                pour réessayer l'envoi de l'e-mail.
+              </p>
+            </div>
+          </div>
+          <div className="terminal-list">
+            {state.pending.map(p => (
+              <div className="terminal-row" key={`pending-${p.id}`}>
+                <div>
+                  <strong>{p.fullName || p.email}</strong>
+                  <small>{p.email} · {roleLabel(p.role)}{p.unitLabel ? ` · ${p.unitLabel}` : ''} · en attente d'activation</small>
+                </div>
+                <button
+                  className="ghost-btn"
+                  onClick={async () => {
+                    try {
+                      const result = await actions.retryPendingInvite(p.id)
+                      setToast(result?.message || 'Invitation relancée')
+                    } catch (error) { setToast(error.message) }
+                    reload()
+                  }}
+                ><Mail size={16} /> Relancer l'invitation</button>
+                <button
+                  className="danger-btn"
+                  onClick={async () => {
+                    try {
+                      await actions.cancelPendingInvite(p.id)
+                      setToast('Invitation annulée')
+                    } catch (error) { setToast(error.message) }
+                    reload()
+                  }}
+                ><Trash2 size={16} /> Annuler</button>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="card table-card">
         <div className="card-head"><div><span className="overline">Membres</span><h3>Accès en vigueur</h3></div></div>
@@ -1083,12 +1159,30 @@ function MembersPanel({ actions, setToast }) {
         {state.error && <ErrorPanel message={state.error} onRetry={reload} />}
         {!state.loading && !state.error && (
           state.members.length === 0
-            ? <EmptyState icon={<Users />} title="Aucun membre" text="Accordez un premier accès." />
+            ? <EmptyState icon={<Users />} title="Aucun membre" text="Invitez un premier copropriétaire." />
             : (
               <div className="terminal-list">
                 {state.members.map(m => (
                   <div className="terminal-row" key={m.id}>
-                    <div><strong>{m.fullName || m.email}</strong><small>{m.email}{m.unitLabel ? ` · ${m.unitLabel}` : ''}</small></div>
+                    <div>
+                      <strong>{m.fullName || m.email}</strong>
+                      <small>
+                        {m.email}{m.unitLabel ? ` · ${m.unitLabel}` : ''}
+                        {m.activated === false ? ' · invitation non encore acceptée' : ''}
+                      </small>
+                    </div>
+                    {m.activated === false && (
+                      <button
+                        className="ghost-btn"
+                        onClick={async () => {
+                          try {
+                            const result = await actions.resendMemberInvite(m.id)
+                            setToast(result?.message || 'Invitation renvoyée')
+                          } catch (error) { setToast(error.message) }
+                          reload()
+                        }}
+                      ><Mail size={16} /> Renvoyer</button>
+                    )}
                     <select
                       value={m.role}
                       aria-label={`Rôle de ${m.email}`}

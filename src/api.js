@@ -94,6 +94,11 @@ export const api = {
     request(`/api/members${buildingQuery(slug)}`, { method: 'POST', body: data }),
   resendMemberInvite: (slug, id) =>
     request(`/api/members/${id}${buildingQuery(slug)}`, { method: 'PATCH', body: { resendInvite: true } }),
+  /** Nouvelle tentative de création du compte pour une invitation en attente. */
+  retryPendingInvite: (slug, pendingId) =>
+    request(`/api/members/pending/${pendingId}${buildingQuery(slug)}`, { method: 'PATCH', body: {} }),
+  cancelPendingInvite: (slug, pendingId) =>
+    request(`/api/members/pending/${pendingId}${buildingQuery(slug)}`, { method: 'DELETE' }),
   updateMember: (slug, id, data) =>
     request(`/api/members/${id}${buildingQuery(slug)}`, { method: 'PATCH', body: data }),
   removeMember: (slug, id) =>

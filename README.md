@@ -50,6 +50,12 @@ Chaque appel d'API repasse par `netlify/lib/auth.mts`, qui applique trois règle
    immeuble et ne peut modifier aucun enregistrement existant.
 3. Toute requête est confinée à un immeuble pour lequel une adhésion est vérifiée.
 
+Un accès peut être décidé **avant** que le compte n'existe : la ligne est alors
+écrite dans `pending_members` et convertie en appartenance réelle à la première
+requête authentifiée de cette adresse. C'est Identity qui vérifie l'adresse
+(lien de confirmation ou d'invitation), donc seule la personne qui contrôle la
+boîte peut réclamer l'accès préparé pour elle.
+
 ## Lancer en local
 
 ```bash
@@ -75,9 +81,17 @@ sont pas disponibles avec `vite` seul.
 4. **Créer l'immeuble** : l'écran de première installation s'affiche
    automatiquement pour un compte sans rattachement. Vous devenez gestionnaire
    de l'immeuble créé.
-5. **Inviter les copropriétaires** depuis l'onglet Identity de Netlify, puis leur
-   accorder un rôle dans *Espace syndic → Accès*. L'API ne crée pas de comptes
-   elle-même : elle rattache un compte existant à un immeuble.
+5. **Inviter les copropriétaires** depuis *Espace syndic → Accès* : une adresse
+   e-mail suffit. La fonction crée le compte Netlify Identity (jeton opérateur,
+   côté serveur uniquement) et envoie l'e-mail d'invitation ; le rôle est
+   accordé dans le même geste. Aucun passage par le tableau de bord Netlify
+   n'est nécessaire.
+   Si la création de compte est momentanément impossible (Identity pas encore
+   actif, jeton opérateur absent, endpoint protégé par mot de passe), la demande
+   n'est pas perdue : elle apparaît dans *Accès préparés* et devient une
+   appartenance réelle à la première connexion de cette adresse — utile
+   seulement si les inscriptions libres sont autorisées, sinon relancer
+   l'invitation depuis cette même liste une fois Identity joignable.
 
 ## Mode tablette / kiosque
 

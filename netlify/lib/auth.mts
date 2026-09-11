@@ -1,8 +1,8 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { getUser } from "@netlify/identity";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { buildingMembers, buildings, terminals, users, type Role } from "../../db/schema.js";
+import { auditLog, buildingMembers, buildings, pendingMembers, terminals, users, type Role } from "../../db/schema.js";
 
 /**
  * Autorisation côté serveur.
@@ -111,6 +111,52 @@ const readTerminalToken = (req: Request) => {
 };
 
 /**
+ * Transforme en appartenances réelles les invitations préparées par le syndic
+ * pour cette adresse e-mail.
+ *
+ * Le syndic décide de l'accès avant que le compte n'existe (voir
+ * `pending_members`). La conversion a lieu ici, à la première requête
+ * authentifiée : Identity a alors vérifié l'adresse, donc seule la personne qui
+ * contrôle la boîte peut réclamer l'accès. Le rôle n'est jamais lu depuis la
+ * requête — il vient de la ligne écrite par le gestionnaire.
+ */
+const claimPendingMemberships = async (userId: string, email: string) => {
+  const needle = email.trim().toLowerCase();
+  if (!needle) return;
+
+  const pending = await db.select().from(pendingMembers).where(eq(pendingMembers.email, needle));
+  if (pending.length === 0) return;
+
+  for (const row of pending) {
+    await db
+      .insert(buildingMembers)
+      .values({
+        buildingId: row.buildingId,
+        userId,
+        role: row.role,
+        unitLabel: row.unitLabel,
+        shareLabel: row.shareLabel,
+      })
+      // Une appartenance déjà accordée par ailleurs a la priorité : l'invitation
+      // en attente est alors simplement consommée.
+      .onConflictDoNothing({ target: [buildingMembers.buildingId, buildingMembers.userId] });
+
+    await db.insert(auditLog).values({
+      buildingId: row.buildingId,
+      actorUserId: userId,
+      actorLabel: needle,
+      actorRole: row.role,
+      action: "member.claimed",
+      entityType: "building_member",
+      entityId: "",
+      summary: `${needle} a activé l'accès « ${row.role} » préparé par le gestionnaire.`,
+    });
+  }
+
+  await db.delete(pendingMembers).where(inArray(pendingMembers.id, pending.map((row) => row.id)));
+};
+
+/**
  * Résout le porteur de la requête. Un jeton de terminal valide est prioritaire
  * sur une éventuelle session utilisateur : une tablette de hall ne doit jamais
  * hériter des droits d'un compte resté connecté sur l'appareil.
@@ -141,6 +187,8 @@ export const resolvePrincipal = async (req: Request): Promise<Principal | null> 
       target: users.id,
       set: { email, fullName, lastSeenAt: new Date() },
     });
+
+  await claimPendingMemberships(identityUser.id, email);
 
   return {
     kind: "user",
