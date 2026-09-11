@@ -72,6 +72,21 @@ const pendingNotice = (email: string) =>
   `dès sa première connexion avec cette adresse (bouton « Créer un compte » sur l'écran de connexion). ` +
   `Vous pouvez aussi relancer l'envoi de l'invitation depuis la liste d'attente.`;
 
+const sendPendingAccessLink = async (email: string) => {
+  try {
+    await sendAccountActivationLink(email);
+  } catch (error) {
+    if (error instanceof IdentityRateLimitError) {
+      throw new HttpError(429, "Un lien d'accès a déjà été demandé récemment. Réessayez dans quelques minutes.");
+    }
+    if (error instanceof IdentityAdminUnavailableError) {
+      console.error("Envoi du lien d'accès en attente impossible:", error.message);
+      throw new HttpError(503, "Impossible d'envoyer le lien d'accès pour le moment. Réessayez dans quelques instants.");
+    }
+    throw error;
+  }
+};
+
 export default async (req: Request, context: Context) => {
   try {
     const ctx = await authorize(req, { buildingSlug: readBuildingSlug(req), require: "members:manage" });
@@ -102,22 +117,41 @@ export default async (req: Request, context: Context) => {
           return Response.json({ id: member.id, email: pending.email, role: member.role, invited: true, pending: false, message: `Invitation envoyée à ${pending.email}.` });
         } catch (error) {
           if (error instanceof IdentityEmailTakenError) {
-            const { account } = await lookupAccountByEmail(pending.email);
-            if (!account) {
-              return Response.json({ id: pending.id, email: pending.email, pending: true, message: `Un compte existe déjà pour ${pending.email} : son accès s'activera à sa prochaine connexion.` });
-            }
-
-            await mirrorAccount(account, pending.email, pending.fullName);
-            const member = await grantMembership(ctx.buildingId, pending.email, account, {
-              role: assertAssignableRole(pending.role), unitLabel: pending.unitLabel, shareLabel: pending.shareLabel,
+            await sendPendingAccessLink(pending.email);
+            await writeAudit(ctx, {
+              action: "member.reinvited",
+              entityType: "pending_member",
+              entityId: pending.id,
+              summary: `Lien d'accès renvoyé à ${pending.email}.`,
             });
-            await writeAudit(ctx, { action: "member.granted", entityType: "building_member", entityId: member.id, summary: `Accès « ${member.role} » accordé à ${pending.email}.` });
-            return Response.json({ id: member.id, email: pending.email, role: member.role, invited: false, pending: false, message: `Accès accordé à ${pending.email}.` });
+            return Response.json({
+              id: pending.id,
+              email: pending.email,
+              pending: true,
+              activationEmailSent: true,
+              message: `Lien d'accès envoyé à ${pending.email}. L'accès sera activé automatiquement à sa première connexion.`,
+            });
           }
 
           if (error instanceof IdentityAdminUnavailableError) {
-            console.error("Relance d'invitation impossible:", error.message);
-            throw new HttpError(503, `L'envoi d'e-mails d'invitation n'est pas disponible pour le moment. ${pendingNotice(pending.email)}`);
+            console.warn("Administration Identity indisponible, tentative de lien d'accès direct:", error.message);
+            await sendPendingAccessLink(pending.email);
+            await writeAudit(ctx, {
+              action: "member.reinvite_requested",
+              entityType: "pending_member",
+              entityId: pending.id,
+              summary: `Lien d'accès demandé pour ${pending.email} sans administration Identity.`,
+            });
+            return Response.json({
+              id: pending.id,
+              email: pending.email,
+              pending: true,
+              activationEmailRequested: true,
+              message:
+                `Demande de lien d'accès envoyée à ${pending.email}. ` +
+                `Si le compte existe déjà, la personne recevra un e-mail pour choisir son mot de passe. ` +
+                `L'accès sera activé à sa première connexion.`,
+            });
           }
           throw error;
         }
