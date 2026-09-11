@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@netlify/database": "^1.1.0",
-    "@netlify/identity": "^1.2.0",
+    "@netlify/identity": "2.0.0",
     "@vitejs/plugin-react": "latest",
     "drizzle-orm": "^1.0.0-beta.22",
     "lucide-react": "latest",
