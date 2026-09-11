@@ -59,6 +59,37 @@ export const buildingMembers = pgTable("building_members", {
   index("building_members_user_idx").on(t.userId),
 ]);
 
+/**
+ * Copropriétaires ajoutés par le syndic dont le compte Netlify Identity n'existe
+ * pas encore (ou n'a pas pu être créé depuis la fonction, faute de jeton
+ * opérateur sur le déploiement).
+ *
+ * L'appartenance est donc décidée AVANT que le compte n'existe : elle est
+ * convertie en ligne de `building_members` dès la première connexion de cette
+ * adresse (voir `claimPendingMemberships` dans auth.mts). Le syndic n'a ainsi
+ * jamais besoin de passer par le tableau de bord Netlify.
+ *
+ * Pourquoi c'est sûr : Identity vérifie l'adresse (lien de confirmation ou
+ * d'invitation) avant d'ouvrir une session, donc seule la personne qui contrôle
+ * réellement la boîte peut réclamer l'accès préparé ici.
+ */
+export const pendingMembers = pgTable("pending_members", {
+  id: serial().primaryKey(),
+  buildingId: integer("building_id").notNull().references(() => buildings.id, { onDelete: "cascade" }),
+  email: text().notNull(),
+  role: text().notNull().default("resident"),
+  unitLabel: text("unit_label").notNull().default(""),
+  shareLabel: text("share_label").notNull().default(""),
+  fullName: text("full_name").notNull().default(""),
+  /** `true` quand l'e-mail d'invitation Identity a bien été envoyé. */
+  invitationSent: boolean("invitation_sent").notNull().default(false),
+  invitedByUserId: text("invited_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("pending_members_building_email_idx").on(t.buildingId, t.email),
+  index("pending_members_email_idx").on(t.email),
+]);
+
 export const tickets = pgTable("tickets", {
   id: serial().primaryKey(),
   reference: text().notNull().unique(),
