@@ -1,12 +1,14 @@
 import React, { useEffect, useState } from 'react'
 import {
   Activity, AlertTriangle, Bell, Building2, CalendarDays, CheckCircle2, ChevronRight,
-  FileText, HelpCircle, LayoutDashboard, LogOut, Mail, Search, Settings, Wrench,
+  FileText, HelpCircle, LayoutDashboard, LogOut, Mail, Search, Settings, Sparkles, Wrench,
 } from 'lucide-react'
 import { api } from './api.js'
 import { Logo, Spinner, ErrorPanel } from './views.jsx'
+import InboxAIView from './inbox-ai.jsx'
 
 const goBuilding = slug => { location.hash = `/syndic?building=${encodeURIComponent(slug)}` }
+const goInbox = () => { location.hash = '/portfolio?view=inbox' }
 
 const statusLabel = status => ({ ok: 'Sous contrôle', watch: 'À surveiller', action: 'Action requise' }[status] || 'Sous contrôle')
 const statusClass = status => ({ ok: 'v2-status-ok', watch: 'v2-status-watch', action: 'v2-status-action' }[status] || 'v2-status-ok')
@@ -23,6 +25,7 @@ const relativeDate = value => {
 export default function ManagerPortfolioView({ session, onLogout }) {
   const [state, setState] = useState({ status: 'loading', data: null, error: null })
   const [query, setQuery] = useState('')
+  const inboxMode = new URLSearchParams(location.hash.split('?')[1] || '').get('view') === 'inbox'
 
   const load = async () => {
     setState(s => ({ ...s, status: s.data ? 'refreshing' : 'loading', error: null }))
@@ -34,8 +37,9 @@ export default function ManagerPortfolioView({ session, onLogout }) {
     }
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => { if (!inboxMode) load() }, [inboxMode])
 
+  if (inboxMode) return <InboxAIView session={session} onLogout={onLogout} />
   if (state.status === 'loading') return <Spinner label="Chargement de votre portefeuille…" />
   if (state.status === 'error') return <ErrorPanel title="Portefeuille indisponible" message={state.error} onRetry={load} />
 
@@ -56,7 +60,7 @@ export default function ManagerPortfolioView({ session, onLogout }) {
           <button><Wrench /> Signalements</button>
           <button><FileText /> Documents</button>
           <button><CalendarDays /> Échéances</button>
-          <button><Mail /> Messages</button>
+          <button onClick={goInbox}><Sparkles /> Inbox IA <b>BETA</b></button>
         </nav>
         <div className="v2-sidebar-bottom">
           <button><HelpCircle /> Aide & support</button>
@@ -140,11 +144,12 @@ export default function ManagerPortfolioView({ session, onLogout }) {
           </section>
 
           <section className="v2-panel">
-            <div className="v2-panel-head"><div><span>INBOX</span><h3>Messages / validations</h3></div><Mail /></div>
-            <div className="v2-inbox-placeholder">
-              <Mail /><strong>La boîte d’entrée CoproLink arrive ensuite</strong>
-              <p>Les e-mails transférés, documents et réponses fournisseurs seront centralisés ici sans imposer un nouvel outil au syndic.</p>
-              <span>V2.1 · Prochaine étape</span>
+            <div className="v2-panel-head"><div><span>INBOX IA</span><h3>Transformer les e-mails en actions</h3></div><Sparkles /></div>
+            <div className="v2-inbox-placeholder ai-ready-card">
+              <BotPreview />
+              <strong>Le prototype intelligent est prêt à tester</strong>
+              <p>Collez un e-mail : CoproLink détecte les dates, classe les pièces jointes, rattache les tickets et prépare les communications.</p>
+              <button className="ai-mini-launch" onClick={goInbox}>Ouvrir l’Inbox IA <ChevronRight /></button>
             </div>
           </section>
 
@@ -161,4 +166,8 @@ export default function ManagerPortfolioView({ session, onLogout }) {
       </section>
     </main>
   )
+}
+
+function BotPreview() {
+  return <span className="ai-bot-preview"><Sparkles /><Mail /></span>
 }
