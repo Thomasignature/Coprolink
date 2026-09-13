@@ -6,9 +6,10 @@ import {
 import { api } from './api.js'
 import { Logo, Spinner, ErrorPanel } from './views.jsx'
 import InboxAIView from './inbox-ai.jsx'
+import BuildingManagementView from './building-management.jsx'
 
-const goBuilding = slug => { location.hash = `/syndic?building=${encodeURIComponent(slug)}` }
-const goInbox = () => { location.hash = '/portfolio?view=inbox' }
+const goBuilding = slug => { location.hash = `/portfolio?view=building&building=${encodeURIComponent(slug)}` }
+const goInbox = slug => { location.hash = `/portfolio?view=inbox${slug ? `&building=${encodeURIComponent(slug)}` : ''}` }
 
 const statusLabel = status => ({ ok: 'Sous contrôle', watch: 'À surveiller', action: 'Action requise' }[status] || 'Sous contrôle')
 const statusClass = status => ({ ok: 'v2-status-ok', watch: 'v2-status-watch', action: 'v2-status-action' }[status] || 'v2-status-ok')
@@ -25,7 +26,11 @@ const relativeDate = value => {
 export default function ManagerPortfolioView({ session, onLogout }) {
   const [state, setState] = useState({ status: 'loading', data: null, error: null })
   const [query, setQuery] = useState('')
-  const inboxMode = new URLSearchParams(location.hash.split('?')[1] || '').get('view') === 'inbox'
+  const params = new URLSearchParams(location.hash.split('?')[1] || '')
+  const view = params.get('view') || 'dashboard'
+  const buildingSlug = params.get('building') || ''
+  const inboxMode = view === 'inbox'
+  const buildingMode = view === 'building'
 
   const load = async () => {
     setState(s => ({ ...s, status: s.data ? 'refreshing' : 'loading', error: null }))
@@ -37,9 +42,10 @@ export default function ManagerPortfolioView({ session, onLogout }) {
     }
   }
 
-  useEffect(() => { if (!inboxMode) load() }, [inboxMode])
+  useEffect(() => { if (!inboxMode && !buildingMode) load() }, [inboxMode, buildingMode])
 
   if (inboxMode) return <InboxAIView session={session} onLogout={onLogout} />
+  if (buildingMode) return <BuildingManagementView session={session} buildingSlug={buildingSlug} onLogout={onLogout} />
   if (state.status === 'loading') return <Spinner label="Chargement de votre portefeuille…" />
   if (state.status === 'error') return <ErrorPanel title="Portefeuille indisponible" message={state.error} onRetry={load} />
 
@@ -56,18 +62,18 @@ export default function ManagerPortfolioView({ session, onLogout }) {
         <Logo />
         <nav>
           <button className="active"><LayoutDashboard /> Tableau de bord</button>
-          <button><Building2 /> Copropriétés</button>
+          <button onClick={() => data.buildings[0] && goBuilding(data.buildings[0].slug)}><Building2 /> Copropriétés</button>
           <button><Wrench /> Signalements</button>
           <button><FileText /> Documents</button>
           <button><CalendarDays /> Échéances</button>
-          <button onClick={goInbox}><Sparkles /> Inbox IA <b>BETA</b></button>
+          <button onClick={() => goInbox()}><Sparkles /> Inbox IA <b>BETA</b></button>
         </nav>
         <div className="v2-sidebar-bottom">
           <button><HelpCircle /> Aide & support</button>
           <button><Settings /> Paramètres</button>
           <div className="v2-user-card">
             <span>{(session.user.fullName || 'SY').split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase()}</span>
-            <div><strong>{session.user.fullName || session.user.email}</strong><small>Syndic / gestionnaire</small></div>
+            <div><strong>{session.user.fullName || session.user.email}</strong><small>Gestion des copropriétés</small></div>
           </div>
           <button onClick={onLogout}><LogOut /> Se déconnecter</button>
         </div>
@@ -149,7 +155,7 @@ export default function ManagerPortfolioView({ session, onLogout }) {
               <BotPreview />
               <strong>Le prototype intelligent est prêt à tester</strong>
               <p>Collez un e-mail : CoproLink détecte les dates, classe les pièces jointes, rattache les tickets et prépare les communications.</p>
-              <button className="ai-mini-launch" onClick={goInbox}>Ouvrir l’Inbox IA <ChevronRight /></button>
+              <button className="ai-mini-launch" onClick={() => goInbox()}>Ouvrir l’Inbox IA <ChevronRight /></button>
             </div>
           </section>
 
