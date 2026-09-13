@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   Activity, AlertTriangle, Bell, Building2, CalendarDays, CheckCircle2, ChevronRight,
   FileText, HelpCircle, LayoutDashboard, LogOut, Mail, Search, Settings, Wrench,
@@ -41,11 +41,10 @@ export default function ManagerPortfolioView({ session, onLogout }) {
 
   const data = state.data
   const firstName = (session.user.fullName || session.user.email).split(' ')[0]
-  const filteredBuildings = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-    if (!needle) return data.buildings
-    return data.buildings.filter(b => `${b.name} ${b.address}`.toLowerCase().includes(needle))
-  }, [data.buildings, query])
+  const needle = query.trim().toLowerCase()
+  const filteredBuildings = needle
+    ? data.buildings.filter(b => `${b.name} ${b.address}`.toLowerCase().includes(needle))
+    : data.buildings
 
   return (
     <main className="v2-shell v2-manager-shell">
