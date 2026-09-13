@@ -63,6 +63,7 @@ export const api = {
   terminalSession: () => request('/api/session', { terminal: true }),
 
   workspace: slug => request(`/api/workspace${buildingQuery(slug)}`),
+  managerDashboard: () => request('/api/manager-dashboard'),
   display: () => request('/api/display', { terminal: true }),
 
   createTicket: (slug, data) =>
