@@ -5,34 +5,52 @@ import {
 } from 'lucide-react'
 import { Logo } from './views.jsx'
 import { longDate, metaFor } from './format.js'
-
-const sections = {
-  overview: 'Accueil',
-  tickets: 'Signalements',
-  documents: 'Documents',
-  building: 'Mon immeuble',
-}
+import './resident-mobile.css'
 
 export default function ResidentV2View({ data, session, onReport, onLogout, setToast }) {
   const [section, setSection] = useState('overview')
   const [reportOpen, setReportOpen] = useState(false)
 
   const firstName = (session.user.fullName || session.user.email).split(' ')[0]
-  const active = useMemo(() => data.buildingTickets.filter(ticket => ticket.status !== 'resolved'), [data.buildingTickets])
-  const ownOpen = useMemo(() => data.myTickets.filter(ticket => ticket.status !== 'resolved'), [data.myTickets])
-  const nextEvent = data.events[0] || null
-  const latestAnnouncement = data.announcements[0] || null
+  const buildingTickets = Array.isArray(data.buildingTickets) ? data.buildingTickets : []
+  const myTickets = Array.isArray(data.myTickets) ? data.myTickets : []
+  const events = Array.isArray(data.events) ? data.events : []
+  const announcements = Array.isArray(data.announcements) ? data.announcements : []
+  const documents = Array.isArray(data.documents) ? data.documents : []
 
-  const follow = useMemo(() => {
+  const active = useMemo(() => buildingTickets.filter(ticket => ticket.status !== 'resolved'), [buildingTickets])
+  const ownOpen = useMemo(() => myTickets.filter(ticket => ticket.status !== 'resolved'), [myTickets])
+  const nextEvent = events[0] || null
+  const latestAnnouncement = announcements[0] || null
+
+  const attentionCount = active.length + (latestAnnouncement ? 1 : 0)
+  const heroTitle = attentionCount === 0 ? 'Tout est sous contrôle' : attentionCount === 1 ? '1 information à consulter' : `${attentionCount} informations à consulter`
+  const heroText = attentionCount === 0
+    ? 'Aucun élément important ne demande votre attention aujourd’hui.'
+    : 'CoproLink regroupe ici uniquement ce qui mérite votre attention.'
+
+  const stream = useMemo(() => {
     const rows = []
-    if (active[0]) rows.push({ type: 'ticket', icon: <Wrench />, title: active[0].title, subtitle: active[0].nextStep || active[0].location, meta: metaFor(active[0].status).label, action: () => setSection('tickets') })
-    if (nextEvent) rows.push({ type: 'event', icon: <CalendarDays />, title: nextEvent.title, subtitle: nextEvent.detail || 'Prochaine échéance', meta: longDate(nextEvent.eventDate), action: () => setSection('building') })
-    if (latestAnnouncement) rows.push({ type: 'news', icon: <Megaphone />, title: latestAnnouncement.title, subtitle: 'Nouvelle communication', meta: 'À lire', action: () => setSection('building') })
+    if (active[0]) rows.push({
+      type: 'ticket', icon: <Wrench />, title: active[0].title,
+      subtitle: active[0].nextStep || active[0].location || 'Intervention en cours',
+      meta: metaFor(active[0].status).label, action: () => setSection('tickets'),
+    })
+    if (nextEvent) rows.push({
+      type: 'event', icon: <CalendarDays />, title: nextEvent.title,
+      subtitle: nextEvent.detail || 'Prochaine échéance de la copropriété',
+      meta: longDate(nextEvent.eventDate), action: () => setSection('building'),
+    })
+    if (latestAnnouncement) rows.push({
+      type: 'news', icon: <Megaphone />, title: latestAnnouncement.title,
+      subtitle: latestAnnouncement.body || 'Nouvelle communication',
+      meta: 'À lire', action: () => setSection('building'),
+    })
     return rows.slice(0, 3)
   }, [active, nextEvent, latestAnnouncement])
 
   return (
-    <main className="v2-shell v2-resident-shell">
+    <main className="v2-shell rm-shell">
       <aside className="v2-sidebar v2-resident-sidebar">
         <Logo />
         <nav>
@@ -48,33 +66,56 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
         </div>
       </aside>
 
-      <section className="v2-main v2-resident-main">
-        <header className="v2-resident-topbar">
-          <div className="v2-mobile-brand"><Logo /></div>
-          <div className="v2-building-switch"><Bell /><span>{data.building.name}</span></div>
+      <section className="v2-main rm-main">
+        <header className="rm-topbar">
+          <Logo />
+          <div className="rm-building-pill"><Building2 /><span>{data.building.name}</span></div>
         </header>
 
         {section === 'overview' && (
-          <div className="v2-resident-content">
-            <p className="v2-greeting">Bonjour {firstName} 👋</p>
-            <section className="v2-resident-hero">
-              <CheckCircle2 />
-              <div>
-                <h1>{active.length === 0 ? 'Tout est sous contrôle' : active.length === 1 ? '1 élément est à suivre' : `${active.length} éléments sont à suivre`}</h1>
-                <p>{active.length === 0 ? 'Aucun élément urgent dans votre immeuble aujourd’hui.' : 'Les éléments utiles sont regroupés ici, sans vous noyer dans les détails.'}</p>
-                <small>CoproLink veille sur votre copropriété et vous montre uniquement ce qui compte.</small>
+          <div className="rm-content">
+            <p className="rm-greeting">Bonjour {firstName} 👋</p>
+
+            <section className="rm-hero">
+              <span className={`rm-hero-status ${attentionCount ? 'attention' : ''}`}><CheckCircle2 /></span>
+              <div className="rm-hero-copy">
+                <h1>{heroTitle}</h1>
+                <p>{heroText}</p>
+                <small>Les détails restent disponibles, mais ne prennent jamais le dessus sur l’essentiel.</small>
               </div>
-              <div className="v2-resident-building-art"><Building2 /></div>
+              <div className="rm-hero-building"><Building2 /></div>
             </section>
 
-            <section className="v2-follow-section">
-              <div className="v2-section-title"><h2>À suivre</h2><button onClick={() => setSection('tickets')}>Voir tout <ChevronRight /></button></div>
-              <div className="v2-follow-card">
-                {follow.length === 0
-                  ? <div className="v2-empty"><CheckCircle2 /><strong>Rien ne demande votre attention</strong><span>Profitez de votre tranquillité.</span></div>
-                  : follow.map((item, index) => (
+            <div className="rm-priority-grid">
+              <button className="rm-priority-card" onClick={() => setSection('building')}>
+                <span><CalendarDays /></span>
+                <div><strong>Prochaine échéance</strong><small>{nextEvent ? nextEvent.title : 'Aucune date prévue'}</small><em>{nextEvent ? longDate(nextEvent.eventDate) : 'Tout est à jour'}</em></div>
+                <ChevronRight />
+              </button>
+              <button className="rm-priority-card" onClick={() => setSection('building')}>
+                <span><Megaphone /></span>
+                <div><strong>Dernière communication</strong><small>{latestAnnouncement ? latestAnnouncement.title : 'Aucune nouvelle communication'}</small><em>{latestAnnouncement ? 'Consulter' : 'Rien à lire'}</em></div>
+                <ChevronRight />
+              </button>
+            </div>
+
+            <section className="rm-section">
+              <div className="rm-section-head"><h2>Actions rapides</h2></div>
+              <div className="rm-action-grid">
+                <button className="rm-action" onClick={() => setReportOpen(true)}><span><Megaphone /></span><strong>Signaler</strong><small>Un problème dans l’immeuble</small></button>
+                <button className="rm-action" onClick={() => setSection('documents')}><span><FileText /></span><strong>Documents</strong><small>Retrouver les documents utiles</small></button>
+                <button className="rm-action" onClick={() => setSection('building')}><span><Building2 /></span><strong>Mon immeuble</strong><small>Infos, syndic et prochaines dates</small></button>
+              </div>
+            </section>
+
+            <section className="rm-section">
+              <div className="rm-section-head"><h2>À suivre</h2><button onClick={() => setSection('tickets')}>Voir tout <ChevronRight /></button></div>
+              <div className="rm-stream">
+                {stream.length === 0
+                  ? <div className="rm-empty"><CheckCircle2 /><strong>Rien ne demande votre attention</strong><span>Votre copropriété est à jour.</span></div>
+                  : stream.map((item, index) => (
                     <button key={`${item.type}-${index}`} onClick={item.action}>
-                      <span className={`v2-follow-icon ${item.type}`}>{item.icon}</span>
+                      <span className={`rm-stream-icon ${item.type}`}>{item.icon}</span>
                       <div><strong>{item.title}</strong><small>{item.subtitle}</small></div>
                       <em>{item.meta}</em><ChevronRight />
                     </button>
@@ -82,32 +123,25 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
               </div>
             </section>
 
-            <section className="v2-quick-section">
-              <h2>Accès rapides</h2>
-              <div className="v2-quick-grid">
-                <button onClick={() => setReportOpen(true)}><Megaphone /><div><strong>Signaler un problème</strong><small>Une anomalie dans l’immeuble ?</small></div><ChevronRight /></button>
-                <button onClick={() => setSection('documents')}><FileText /><div><strong>Documents</strong><small>Retrouvez les documents utiles</small></div><ChevronRight /></button>
-                <button onClick={() => setSection('building')}><Building2 /><div><strong>Mon immeuble</strong><small>Informations et détails</small></div><ChevronRight /></button>
-              </div>
-            </section>
-
-            <button className="v2-residence-card" onClick={() => setSection('building')}>
-              <span><Building2 /></span><div><strong>{data.building.name}</strong><small>{data.building.address || 'Adresse à compléter'}</small><em>{data.building.lots} lots</em></div><ChevronRight />
+            <button className="rm-building-card" onClick={() => setSection('building')}>
+              <span><Building2 /></span>
+              <div><strong>{data.building.name}</strong><small>{data.building.address || 'Adresse à compléter'}</small><em>{data.building.lots || '—'} lots</em></div>
+              <ChevronRight />
             </button>
           </div>
         )}
 
         {section === 'tickets' && (
-          <div className="v2-resident-content">
-            <div className="v2-page-heading"><div><span>SIGNALEMENTS</span><h1>Suivez vos demandes simplement.</h1><p>Vous savez où en est chaque intervention sans devoir relancer.</p></div><button className="v2-primary" onClick={() => setReportOpen(true)}><Plus /> Nouveau signalement</button></div>
-            <div className="v2-resident-list">
-              {data.myTickets.length === 0
-                ? <div className="v2-empty"><CheckCircle2 /><strong>Aucun signalement</strong><span>Vos demandes apparaîtront ici.</span></div>
-                : data.myTickets.map(ticket => (
-                  <article key={ticket.reference}>
-                    <div><span>{ticket.reference}</span><h3>{ticket.title}</h3><p>{ticket.location}</p></div>
-                    <i className={`v2-ticket-status ${ticket.status}`}>{metaFor(ticket.status).label}</i>
-                    <strong>{ticket.nextStep || 'Suivi en cours'}</strong>
+          <div className="rm-content">
+            <div className="rm-page-head"><span>SIGNALEMENTS</span><h1>Mes demandes</h1><p>Un suivi simple, sans devoir relancer le syndic pour savoir où en est votre demande.</p></div>
+            <button className="rm-primary" onClick={() => setReportOpen(true)}><Plus /> Nouveau signalement</button>
+            <div className="rm-list" style={{ marginTop: 14 }}>
+              {myTickets.length === 0
+                ? <div className="rm-empty"><CheckCircle2 /><strong>Aucun signalement</strong><span>Vos demandes apparaîtront ici.</span></div>
+                : myTickets.map(ticket => (
+                  <article className="rm-ticket" key={ticket.reference}>
+                    <div><small>{ticket.reference}</small><h3>{ticket.title}</h3><p>{ticket.location || 'Emplacement non précisé'}</p><p style={{ marginTop: 8 }}>{ticket.nextStep || 'Suivi en cours'}</p></div>
+                    <i className="rm-ticket-status">{metaFor(ticket.status).label}</i>
                   </article>
                 ))}
             </div>
@@ -115,13 +149,13 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
         )}
 
         {section === 'documents' && (
-          <div className="v2-resident-content">
-            <div className="v2-page-heading"><div><span>DOCUMENTS</span><h1>Tout retrouver au même endroit.</h1><p>Les documents de votre copropriété, accessibles sans chercher dans vos e-mails.</p></div></div>
-            <div className="v2-document-grid">
-              {data.documents.length === 0
-                ? <div className="v2-empty"><FileText /><strong>Aucun document</strong><span>Les documents ajoutés par le syndic apparaîtront ici.</span></div>
-                : data.documents.map(doc => (
-                  <button key={doc.id} onClick={() => setToast(doc.available ? 'Ouverture du document bientôt disponible' : 'Le stockage du fichier n’est pas encore activé')}>
+          <div className="rm-content">
+            <div className="rm-page-head"><span>DOCUMENTS</span><h1>Documents utiles</h1><p>Les documents de votre copropriété sans devoir rechercher dans vos e-mails.</p></div>
+            <div className="rm-list">
+              {documents.length === 0
+                ? <div className="rm-empty"><FileText /><strong>Aucun document</strong><span>Les documents disponibles apparaîtront ici.</span></div>
+                : documents.map(doc => (
+                  <button className="rm-doc" key={doc.id} onClick={() => setToast(doc.available ? 'Ouverture du document bientôt disponible' : 'Le stockage du fichier n’est pas encore activé')}>
                     <FileText /><div><strong>{doc.name}</strong><small>Mis à jour le {longDate(doc.updatedOn)}</small></div><ChevronRight />
                   </button>
                 ))}
@@ -130,23 +164,23 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
         )}
 
         {section === 'building' && (
-          <div className="v2-resident-content">
-            <div className="v2-page-heading"><div><span>MON IMMEUBLE</span><h1>{data.building.name}</h1><p>{data.building.address}</p></div></div>
-            <div className="v2-building-grid">
-              <section><Building2 /><span>Lots</span><strong>{data.building.lots || '—'}</strong></section>
-              <section><Wrench /><span>Interventions ouvertes</span><strong>{active.length}</strong></section>
-              <section><CalendarDays /><span>Prochaine date</span><strong>{nextEvent ? longDate(nextEvent.eventDate) : 'Aucune'}</strong></section>
-              <section><Bell /><span>Syndic</span><strong>{data.building.managerName || 'À compléter'}</strong></section>
+          <div className="rm-content">
+            <div className="rm-page-head"><span>MON IMMEUBLE</span><h1>{data.building.name}</h1><p>{data.building.address || 'Adresse à compléter'}</p></div>
+            <div className="rm-building-grid">
+              <article><Building2 /><span>Lots</span><strong>{data.building.lots || '—'}</strong></article>
+              <article><Wrench /><span>Interventions ouvertes</span><strong>{active.length}</strong></article>
+              <article><CalendarDays /><span>Prochaine date</span><strong>{nextEvent ? longDate(nextEvent.eventDate) : 'Aucune'}</strong></article>
+              <article><Bell /><span>Syndic</span><strong>{data.building.managerName || 'À compléter'}</strong></article>
             </div>
-            <section className="v2-panel v2-building-info">
-              <h3>Informations utiles</h3>
-              <p><strong>Numéro d’urgence :</strong> {data.building.emergencyPhone || 'Non renseigné'}</p>
-              {latestAnnouncement && <div className="v2-building-news"><Megaphone /><div><strong>{latestAnnouncement.title}</strong><span>{latestAnnouncement.body}</span></div></div>}
+            <section className="rm-info-card" style={{ marginTop: 12 }}>
+              <strong style={{ fontSize: 12 }}>Informations utiles</strong>
+              <p style={{ fontSize: 10, color: '#748079' }}><strong>Numéro d’urgence :</strong> {data.building.emergencyPhone || 'Non renseigné'}</p>
+              {latestAnnouncement && <div style={{ marginTop: 12 }}><strong style={{ fontSize: 11 }}>{latestAnnouncement.title}</strong><p style={{ fontSize: 10, color: '#748079', lineHeight: 1.5 }}>{latestAnnouncement.body}</p></div>}
             </section>
           </div>
         )}
 
-        <nav className="v2-mobile-nav">
+        <nav className="rm-bottom-nav">
           <button className={section === 'overview' ? 'active' : ''} onClick={() => setSection('overview')}><Home /><span>Accueil</span></button>
           <button className={section === 'tickets' ? 'active' : ''} onClick={() => setSection('tickets')}><Megaphone /><span>Signalements</span></button>
           <button className={section === 'documents' ? 'active' : ''} onClick={() => setSection('documents')}><FileText /><span>Documents</span></button>
@@ -163,8 +197,8 @@ function ReportDialog({ onClose, onSubmit, setToast }) {
   const [form, setForm] = useState({ category: 'Entretien', title: '', location: '', description: '', isPublic: true })
   const [busy, setBusy] = useState(false)
 
-  const submit = async e => {
-    e.preventDefault()
+  const submit = async event => {
+    event.preventDefault()
     if (busy) return
     setBusy(true)
     try {
@@ -179,14 +213,14 @@ function ReportDialog({ onClose, onSubmit, setToast }) {
   }
 
   return (
-    <div className="v2-modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
+    <div className="v2-modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) onClose() }}>
       <form className="v2-modal" onSubmit={submit}>
         <div className="v2-panel-head"><div><span>SIGNALEMENT</span><h3>Signaler un problème</h3></div><button type="button" onClick={onClose}>×</button></div>
-        <label>Catégorie<select value={form.category} onChange={e => setForm({ ...form, category: e.target.value })}><option>Entretien</option><option>Ascenseur</option><option>Électricité</option><option>Eau</option><option>Chauffage</option><option>Autre</option></select></label>
-        <label>Titre<input value={form.title} onChange={e => setForm({ ...form, title: e.target.value })} placeholder="Ex. Lumière du parking en panne" /></label>
-        <label>Emplacement<input required value={form.location} onChange={e => setForm({ ...form, location: e.target.value })} placeholder="Ex. Parking -1" /></label>
-        <label>Description<textarea required value={form.description} onChange={e => setForm({ ...form, description: e.target.value })} placeholder="Décrivez brièvement le problème…" /></label>
-        <label className="v2-check"><input type="checkbox" checked={form.isPublic} onChange={e => setForm({ ...form, isPublic: e.target.checked })} /> Visible aux autres copropriétaires</label>
+        <label>Catégorie<select value={form.category} onChange={event => setForm({ ...form, category: event.target.value })}><option>Entretien</option><option>Ascenseur</option><option>Électricité</option><option>Eau</option><option>Chauffage</option><option>Autre</option></select></label>
+        <label>Titre<input value={form.title} onChange={event => setForm({ ...form, title: event.target.value })} placeholder="Ex. Lumière du parking en panne" /></label>
+        <label>Emplacement<input required value={form.location} onChange={event => setForm({ ...form, location: event.target.value })} placeholder="Ex. Parking -1" /></label>
+        <label>Description<textarea required value={form.description} onChange={event => setForm({ ...form, description: event.target.value })} placeholder="Décrivez brièvement le problème…" /></label>
+        <label className="v2-check"><input type="checkbox" checked={form.isPublic} onChange={event => setForm({ ...form, isPublic: event.target.checked })} /> Visible aux autres copropriétaires</label>
         <button className="v2-primary" disabled={busy}>{busy ? 'Envoi…' : 'Envoyer le signalement'}</button>
       </form>
     </div>
