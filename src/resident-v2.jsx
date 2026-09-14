@@ -7,7 +7,7 @@ import { Logo } from './views.jsx'
 import { longDate, metaFor } from './format.js'
 import './resident-mobile.css'
 
-export default function ResidentV2View({ data, session, onReport, onLogout, setToast }) {
+export default function ResidentV2View({ data, session, onReport, onLogout, setToast, previewRole = null, readOnly = false }) {
   const [section, setSection] = useState('overview')
   const [reportOpen, setReportOpen] = useState(false)
 
@@ -17,6 +17,15 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
   const events = Array.isArray(data.events) ? data.events : []
   const announcements = Array.isArray(data.announcements) ? data.announcements : []
   const documents = Array.isArray(data.documents) ? data.documents : []
+  const residentLabel = previewRole === 'tenant' ? 'Locataire / occupant' : 'Copropriétaire'
+
+  const openReport = () => {
+    if (readOnly) {
+      setToast('Mode prévisualisation : le signalement ne sera pas envoyé.')
+      return
+    }
+    setReportOpen(true)
+  }
 
   const active = useMemo(() => buildingTickets.filter(ticket => ticket.status !== 'resolved'), [buildingTickets])
   const ownOpen = useMemo(() => myTickets.filter(ticket => ticket.status !== 'resolved'), [myTickets])
@@ -61,7 +70,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
         </nav>
         <div className="v2-sidebar-bottom">
           <button><Settings /> Paramètres</button>
-          <div className="v2-user-card"><span>{firstName.slice(0, 2).toUpperCase()}</span><div><strong>{session.user.fullName || session.user.email}</strong><small>Copropriétaire</small></div></div>
+          <div className="v2-user-card"><span>{firstName.slice(0, 2).toUpperCase()}</span><div><strong>{session.user.fullName || session.user.email}</strong><small>{residentLabel}</small></div></div>
           <button onClick={onLogout}><LogOut /> Se déconnecter</button>
         </div>
       </aside>
@@ -74,7 +83,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
 
         {section === 'overview' && (
           <div className="rm-content">
-            <p className="rm-greeting">Bonjour {firstName} 👋</p>
+            <p className="rm-greeting">Bonjour {firstName} 👋{previewRole && <span> · vue {residentLabel.toLowerCase()}</span>}</p>
 
             <section className="rm-hero">
               <span className={`rm-hero-status ${attentionCount ? 'attention' : ''}`}><CheckCircle2 /></span>
@@ -102,7 +111,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
             <section className="rm-section">
               <div className="rm-section-head"><h2>Actions rapides</h2></div>
               <div className="rm-action-grid">
-                <button className="rm-action" onClick={() => setReportOpen(true)}><span><Megaphone /></span><strong>Signaler</strong><small>Un problème dans l’immeuble</small></button>
+                <button className="rm-action" onClick={openReport}><span><Megaphone /></span><strong>Signaler</strong><small>{readOnly ? 'Disponible hors prévisualisation' : 'Un problème dans l’immeuble'}</small></button>
                 <button className="rm-action" onClick={() => setSection('documents')}><span><FileText /></span><strong>Documents</strong><small>Retrouver les documents utiles</small></button>
                 <button className="rm-action" onClick={() => setSection('building')}><span><Building2 /></span><strong>Mon immeuble</strong><small>Infos, syndic et prochaines dates</small></button>
               </div>
@@ -133,11 +142,12 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
 
         {section === 'tickets' && (
           <div className="rm-content">
-            <div className="rm-page-head"><span>SIGNALEMENTS</span><h1>Mes demandes</h1><p>Un suivi simple, sans devoir relancer le syndic pour savoir où en est votre demande.</p></div>
-            <button className="rm-primary" onClick={() => setReportOpen(true)}><Plus /> Nouveau signalement</button>
+            <div className="rm-page-head"><span>SIGNALEMENTS</span><h1>{previewRole === 'tenant' ? 'Mes signalements' : 'Mes demandes'}</h1><p>Un suivi simple, sans devoir relancer le syndic pour savoir où en est votre demande.</p></div>
+            <button className="rm-primary" onClick={openReport}><Plus /> Nouveau signalement</button>
+            {readOnly && <p className="preview-readonly-note">En prévisualisation, aucune action ne sera enregistrée.</p>}
             <div className="rm-list" style={{ marginTop: 14 }}>
               {myTickets.length === 0
-                ? <div className="rm-empty"><CheckCircle2 /><strong>Aucun signalement</strong><span>Vos demandes apparaîtront ici.</span></div>
+                ? <div className="rm-empty"><CheckCircle2 /><strong>Aucun signalement personnel dans cet aperçu</strong><span>Les demandes propres à l’utilisateur apparaîtront ici une fois connecté avec son compte.</span></div>
                 : myTickets.map(ticket => (
                   <article className="rm-ticket" key={ticket.reference}>
                     <div><small>{ticket.reference}</small><h3>{ticket.title}</h3><p>{ticket.location || 'Emplacement non précisé'}</p><p style={{ marginTop: 8 }}>{ticket.nextStep || 'Suivi en cours'}</p></div>
@@ -150,10 +160,10 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
 
         {section === 'documents' && (
           <div className="rm-content">
-            <div className="rm-page-head"><span>DOCUMENTS</span><h1>Documents utiles</h1><p>Les documents de votre copropriété sans devoir rechercher dans vos e-mails.</p></div>
+            <div className="rm-page-head"><span>DOCUMENTS</span><h1>Documents utiles</h1><p>{previewRole === 'tenant' ? 'Uniquement les documents autorisés aux occupants.' : 'Les documents de votre copropriété sans devoir rechercher dans vos e-mails.'}</p></div>
             <div className="rm-list">
               {documents.length === 0
-                ? <div className="rm-empty"><FileText /><strong>Aucun document</strong><span>Les documents disponibles apparaîtront ici.</span></div>
+                ? <div className="rm-empty"><FileText /><strong>Aucun document accessible</strong><span>Les documents disponibles pour ce profil apparaîtront ici.</span></div>
                 : documents.map(doc => (
                   <button className="rm-doc" key={doc.id} onClick={() => setToast(doc.available ? 'Ouverture du document bientôt disponible' : 'Le stockage du fichier n’est pas encore activé')}>
                     <FileText /><div><strong>{doc.name}</strong><small>Mis à jour le {longDate(doc.updatedOn)}</small></div><ChevronRight />
@@ -188,7 +198,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
         </nav>
       </section>
 
-      {reportOpen && <ReportDialog onClose={() => setReportOpen(false)} onSubmit={onReport} setToast={setToast} />}
+      {reportOpen && !readOnly && <ReportDialog onClose={() => setReportOpen(false)} onSubmit={onReport} setToast={setToast} />}
     </main>
   )
 }
