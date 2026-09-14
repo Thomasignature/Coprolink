@@ -165,7 +165,7 @@ export default function App() {
   if (wantsPortfolio) {
     return (
       <>
-        <ManagerPortfolioView session={data} onLogout={onLogout} />
+        <ManagerPortfolioView session={data} onLogout={onLogout} setToast={setToast} />
         <Toast message={toast} />
       </>
     )
