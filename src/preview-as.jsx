@@ -30,25 +30,45 @@ const makeReadOnlyActions = () => ({
   removeMember: readOnlyError,
 })
 
+const publicTicket = ticket => ({
+  reference: ticket.reference,
+  title: ticket.title,
+  category: ticket.category,
+  location: ticket.location,
+  status: ticket.status,
+  nextStep: ticket.nextStep,
+  createdAt: ticket.createdAt,
+  timeline: Array.isArray(ticket.timeline)
+    ? ticket.timeline.map(step => ({ label: step.label, date: step.date }))
+    : [],
+})
+
+const residentTickets = workspace => (workspace.buildingTickets || [])
+  .filter(ticket => ticket.isPublic !== false)
+  .map(publicTicket)
+
 const filterFor = (workspace, role) => {
   if (role === 'syndic') return workspace
-  if (role === 'tenant') {
-    return {
-      ...workspace,
-      member: null,
-      documents: (workspace.documents || []).filter(item => item.access === 'public'),
-      announcements: (workspace.announcements || []).filter(item => item.isPublic !== false),
-      events: (workspace.events || []).filter(item => item.isPublic !== false),
-      myTickets: [],
-      capabilities: [],
-    }
-  }
-  return {
+
+  const base = {
     ...workspace,
     member: null,
     myTickets: [],
+    buildingTickets: residentTickets(workspace),
     capabilities: [],
+    activity: [],
   }
+
+  if (role === 'tenant') {
+    return {
+      ...base,
+      documents: (workspace.documents || []).filter(item => item.access === 'public'),
+      announcements: (workspace.announcements || []).filter(item => item.isPublic !== false),
+      events: (workspace.events || []).filter(item => item.isPublic !== false),
+    }
+  }
+
+  return base
 }
 
 export default function PreviewAsView({ session, buildingSlug, initialRole = 'owner', onLogout, setToast }) {
@@ -69,10 +89,7 @@ export default function PreviewAsView({ session, buildingSlug, initialRole = 'ow
 
   const previewData = useMemo(() => state.data ? filterFor(state.data, role) : null, [state.data, role])
   const safeActions = useMemo(() => makeReadOnlyActions(), [])
-  const previewSession = useMemo(() => ({
-    ...session,
-    previewRole: role,
-  }), [session, role])
+  const previewSession = useMemo(() => ({ ...session, previewRole: role }), [session, role])
 
   if (!buildingSlug) return <ErrorPanel title="Aucun immeuble" message="Choisissez d’abord un immeuble à prévisualiser." />
   if (state.status === 'loading') return <Spinner label="Préparation de la prévisualisation…" />
@@ -89,7 +106,7 @@ export default function PreviewAsView({ session, buildingSlug, initialRole = 'ow
     <div>
       <div className="preview-toolbar" role="status">
         <strong>Prévisualisation : {LABELS[role]}</strong>
-        <span>Simulation en lecture seule · aucune modification réelle</span>
+        <span>Simulation en lecture seule · données filtrées selon le profil</span>
         <select aria-label="Prévisualiser comme" value={role} onChange={changeRole}>
           <option value="owner">Copropriétaire</option>
           <option value="tenant">Locataire / occupant</option>
