@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { Logo } from './views.jsx'
 import { longDate, metaFor } from './format.js'
+import ResidentLotView from './resident-lot.jsx'
 import './resident-mobile.css'
 
 export default function ResidentV2View({ data, session, onReport, onLogout, setToast, previewRole = null, readOnly = false }) {
@@ -66,6 +67,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
           <button className={section === 'overview' ? 'active' : ''} onClick={() => setSection('overview')}><Home /> Accueil</button>
           <button className={section === 'tickets' ? 'active' : ''} onClick={() => setSection('tickets')}><Megaphone /> Signalements{ownOpen.length > 0 && <b>{ownOpen.length}</b>}</button>
           <button className={section === 'documents' ? 'active' : ''} onClick={() => setSection('documents')}><FileText /> Documents</button>
+          <button className={section === 'lot' ? 'active' : ''} onClick={() => setSection('lot')}><Building2 /> Mon lot</button>
           <button className={section === 'building' ? 'active' : ''} onClick={() => setSection('building')}><Building2 /> Mon immeuble</button>
         </nav>
         <div className="v2-sidebar-bottom">
@@ -113,7 +115,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
               <div className="rm-action-grid">
                 <button className="rm-action" onClick={openReport}><span><Megaphone /></span><strong>Signaler</strong><small>{readOnly ? 'Disponible hors prévisualisation' : 'Un problème dans l’immeuble'}</small></button>
                 <button className="rm-action" onClick={() => setSection('documents')}><span><FileText /></span><strong>Documents</strong><small>Retrouver les documents utiles</small></button>
-                <button className="rm-action" onClick={() => setSection('building')}><span><Building2 /></span><strong>Mon immeuble</strong><small>Infos, syndic et prochaines dates</small></button>
+                <button className="rm-action" onClick={() => setSection('lot')}><span><Building2 /></span><strong>Mon lot</strong><small>Mon logement et mes informations</small></button>
               </div>
             </section>
 
@@ -173,6 +175,8 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
           </div>
         )}
 
+        {section === 'lot' && <ResidentLotView data={data} previewRole={previewRole} />}
+
         {section === 'building' && (
           <div className="rm-content">
             <div className="rm-page-head"><span>MON IMMEUBLE</span><h1>{data.building.name}</h1><p>{data.building.address || 'Adresse à compléter'}</p></div>
@@ -194,7 +198,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
           <button className={section === 'overview' ? 'active' : ''} onClick={() => setSection('overview')}><Home /><span>Accueil</span></button>
           <button className={section === 'tickets' ? 'active' : ''} onClick={() => setSection('tickets')}><Megaphone /><span>Signalements</span></button>
           <button className={section === 'documents' ? 'active' : ''} onClick={() => setSection('documents')}><FileText /><span>Documents</span></button>
-          <button className={section === 'building' ? 'active' : ''} onClick={() => setSection('building')}><Building2 /><span>Immeuble</span></button>
+          <button className={section === 'lot' ? 'active' : ''} onClick={() => setSection('lot')}><Building2 /><span>Mon lot</span></button>
         </nav>
       </section>
 
