@@ -1,6 +1,7 @@
 import React from 'react'
 import { Building2, DoorOpen, FileText, ShieldCheck, WalletCards, Wrench } from 'lucide-react'
 import { money } from './format.js'
+import './resident-lot.css'
 
 export default function ResidentLotView({ data, previewRole = null }) {
   const isTenant = previewRole === 'tenant'
