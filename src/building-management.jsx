@@ -1,8 +1,8 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   ArrowLeft, Building2, CalendarDays, Check, ChevronRight, CircleUserRound, DoorOpen,
-  FileText, KeyRound, LayoutDashboard, LogOut, Plus, Search, Settings, ShieldCheck,
-  Sparkles, UserCog, Users, Wrench,
+  FileText, LayoutDashboard, LogOut, Plus, Search, Settings, ShieldCheck,
+  UserCog, Users, Wrench,
 } from 'lucide-react'
 import { api } from './api.js'
 import { apiV3 } from './api-v3.js'
@@ -94,11 +94,13 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const nextEvent = Array.isArray(workspace.events) ? workspace.events[0] : null
   const documentsCount = Array.isArray(workspace.documents) ? workspace.documents.length : 0
 
-  const unitById = useMemo(() => new Map(units.map(unit => [unit.id, unit])), [units])
-  const personById = useMemo(() => new Map(people.map(person => [person.id, person])), [people])
-  const visibilityByPerson = useMemo(() => new Map(visibility.map(item => [item.personId, item])), [visibility])
-  const accessByPerson = useMemo(() => new Map(access.map(item => [item.personId, item.state])), [access])
-  const referentByPerson = useMemo(() => new Map(referents.map(item => [item.personId, item])), [referents])
+  // Calculs simples volontairement sans hooks : cette vue retourne pendant le chargement,
+  // donc aucun hook ne doit apparaître après les retours conditionnels ci-dessus.
+  const unitById = new Map(units.map(unit => [unit.id, unit]))
+  const personById = new Map(people.map(person => [person.id, person]))
+  const visibilityByPerson = new Map(visibility.map(item => [item.personId, item]))
+  const accessByPerson = new Map(access.map(item => [item.personId, item.state]))
+  const referentByPerson = new Map(referents.map(item => [item.personId, item]))
 
   const personSummary = person => {
     const rels = activeRelations.filter(item => item.personId === person.id)
@@ -116,7 +118,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const referentPeople = residents.filter(person => person.isReferent)
 
   const needle = query.trim().toLocaleLowerCase('fr-BE')
-  const directoryEntries = useMemo(() => {
+  const directoryEntries = (() => {
     const rows = []
     const linked = new Set()
     for (const unit of units) {
@@ -140,9 +142,9 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
       if (!needle || haystack.includes(needle)) rows.push({ key: `unlinked:${person.id}`, unit: null, person, relations: [] })
     }
     return rows
-  }, [units, activeRelations, people, personById, needle])
+  })()
 
-  const floors = useMemo(() => {
+  const floors = (() => {
     const grouped = new Map()
     for (const row of directoryEntries) {
       const key = clean(row.unit?.floor)
@@ -156,7 +158,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
       if (Number.isFinite(an) && Number.isFinite(bn)) return bn - an
       return a.localeCompare(b, 'fr-BE')
     })
-  }, [directoryEntries])
+  })()
 
   const runAction = async action => {
     setActionError('')
