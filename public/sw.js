@@ -1,4 +1,4 @@
-const CACHE = 'coprolink-shell-v2';
+const CACHE = 'coprolink-shell-release-2026-09';
 const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/icon.svg'];
 
 self.addEventListener('install', event => {
@@ -18,13 +18,9 @@ self.addEventListener('fetch', event => {
   const url = new URL(request.url);
   if (url.origin !== location.origin) return;
 
-  // Les appels d'API ne passent jamais par le service worker : ils portent des
-  // données authentifiées, et un repli sur le shell renverrait du HTML là où le
-  // client attend du JSON.
+  // Les API authentifiées ne sont jamais mises en cache par le service worker.
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/.netlify/')) return;
 
-  // Le repli hors ligne ne concerne que la navigation : le shell est servi, puis
-  // l'application affiche son propre écran d'erreur si l'API reste injoignable.
   event.respondWith(
     fetch(request).catch(async () => {
       const cached = await caches.match(request);
