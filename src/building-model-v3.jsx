@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { Building2, CheckCircle2, DoorOpen, Plus, ShieldCheck, Trash2, UserCog, UserPlus, Users, Wrench } from 'lucide-react'
+import { Building2, CheckCircle2, DoorOpen, Plus, ShieldCheck, Trash2, UserCog, Users, Wrench } from 'lucide-react'
 import { apiV3 } from './api-v3.js'
 import { ErrorPanel, Spinner } from './views.jsx'
+import PersonAccessControl from './person-access-control.jsx'
 import './building-model-v3.css'
 
 const relationLabel = value => ({ owner: 'Copropriétaire', occupant: 'Occupant', tenant: 'Locataire' }[value] || value)
-const accessLabel = state => ({ active: 'Accès actif', pending: 'Invitation en attente', none: 'Sans accès' }[state] || 'Sans accès')
 
 export default function BuildingModelV3View({ buildingSlug, onBack, setToast }) {
   const [state, setState] = useState({ status: 'loading', data: null, access: [], error: null })
@@ -38,17 +38,20 @@ export default function BuildingModelV3View({ buildingSlug, onBack, setToast }) 
       setToast?.('Modèle V3 enregistré dans la base de test.')
     } catch (error) {
       setToast?.(error.message)
+      throw error
     }
   }
 
+  const saveEmail = async (person, email) => {
+    await apiV3.update(buildingSlug, 'person', person.id, { email })
+    await load()
+    setToast?.('Adresse e-mail enregistrée.')
+  }
+
   const invite = async person => {
-    try {
-      const result = await apiV3.invitePerson(buildingSlug, person.id)
-      await load()
-      setToast?.(result.message || 'Accès CoproLink préparé.')
-    } catch (error) {
-      setToast?.(error.message)
-    }
+    const result = await apiV3.invitePerson(buildingSlug, person.id)
+    await load()
+    setToast?.(result.message || 'Accès CoproLink préparé.')
   }
 
   if (!buildingSlug) return <ErrorPanel title="Aucun immeuble" message="Sélectionnez un immeuble." />
@@ -62,7 +65,7 @@ export default function BuildingModelV3View({ buildingSlug, onBack, setToast }) 
         <button onClick={onBack}>Retour à l’immeuble</button>
       </header>
 
-      <section className="m3-banner"><ShieldCheck /><div><strong>Environnement de validation</strong><span>Les personnes peuvent exister dans l’immeuble sans compte. L’accès CoproLink se donne séparément, en un clic.</span></div></section>
+      <section className="m3-banner"><ShieldCheck /><div><strong>Environnement de validation</strong><span>Une personne peut exister sans compte. Ajoutez son e-mail puis invitez-la sur CoproLink quand vous le souhaitez.</span></div></section>
 
       <section className="m3-stats">
         <article><DoorOpen /><strong>{model.units.length}</strong><span>lots</span></article>
@@ -87,14 +90,14 @@ export default function BuildingModelV3View({ buildingSlug, onBack, setToast }) 
           <div className="m3-title"><Users /><div><span>PERSONNES</span><h2>Personnes liées</h2></div></div>
           <form onSubmit={event => { event.preventDefault(); if (!personDraft.fullName.trim()) return; mutate(async () => { await apiV3.create(buildingSlug, 'person', personDraft); setPersonDraft({ fullName: '', email: '', phone: '' }) }) }}>
             <input placeholder="Nom et prénom" value={personDraft.fullName} onChange={e => setPersonDraft(v => ({ ...v, fullName: e.target.value }))} required />
-            <input placeholder="E-mail" type="email" value={personDraft.email} onChange={e => setPersonDraft(v => ({ ...v, email: e.target.value }))} />
+            <input placeholder="E-mail (optionnel)" type="email" value={personDraft.email} onChange={e => setPersonDraft(v => ({ ...v, email: e.target.value }))} />
             <input placeholder="Téléphone" value={personDraft.phone} onChange={e => setPersonDraft(v => ({ ...v, phone: e.target.value }))} />
             <button><Plus /> Ajouter</button>
           </form>
           <div className="m3-list">{model.people.map(person => {
             const vis = visibilityByPerson.get(person.id)
             const access = accessByPerson.get(person.id) || 'none'
-            return <div key={person.id} className="m3-person-row"><div><strong>{person.fullName}</strong><span>{person.email || 'Sans e-mail'} · annuaire {vis?.directoryVisible === false ? 'masqué' : 'visible'} · {accessLabel(access)}</span></div><div className="m3-row-actions">{access === 'none' && person.email && <button className="m3-invite" title="Inviter sur CoproLink" onClick={() => invite(person)}><UserPlus /></button>}<button onClick={() => mutate(() => apiV3.remove(buildingSlug, 'person', person.id))}><Trash2 /></button></div></div>
+            return <div key={person.id} className="m3-person-row"><div className="m3-person-copy"><strong>{person.fullName}</strong><span>Annuaire {vis?.directoryVisible === false ? 'masqué' : 'visible'}</span><PersonAccessControl person={person} access={access} onSaveEmail={email => saveEmail(person, email)} onInvite={() => invite(person)} /></div><button onClick={() => mutate(() => apiV3.remove(buildingSlug, 'person', person.id))}><Trash2 /></button></div>
           })}</div>
         </section>
 
