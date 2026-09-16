@@ -22,4 +22,5 @@ export const apiV3 = {
   remove: (slug, entity, id) => request(`/api/building-model${q(slug)}`, { method: 'DELETE', body: { entity, id } }),
   accessStates: slug => request(`/api/person-access${q(slug)}`),
   invitePerson: (slug, personId) => request(`/api/person-access${q(slug)}`, { method: 'POST', body: { personId } }),
+  inboundEmails: slug => request(`/api/inbound-email${q(slug)}`),
 }
