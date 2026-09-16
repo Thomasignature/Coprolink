@@ -94,8 +94,6 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const nextEvent = Array.isArray(workspace.events) ? workspace.events[0] : null
   const documentsCount = Array.isArray(workspace.documents) ? workspace.documents.length : 0
 
-  // Calculs simples volontairement sans hooks : cette vue retourne pendant le chargement,
-  // donc aucun hook ne doit apparaître après les retours conditionnels ci-dessus.
   const unitById = new Map(units.map(unit => [unit.id, unit]))
   const personById = new Map(people.map(person => [person.id, person]))
   const visibilityByPerson = new Map(visibility.map(item => [item.personId, item]))
@@ -228,8 +226,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
         <nav>
           <button onClick={() => { location.hash = '/portfolio' }}><LayoutDashboard /> Tableau de bord</button>
           <button className={section === 'overview' ? 'active' : ''} onClick={() => setSection('overview')}><Building2 /> Vue d’ensemble</button>
-          <button className={section === 'directory' ? 'active' : ''} onClick={() => setSection('directory')}><Users /> Annuaire & lots</button>
-          <button className={section === 'roles' ? 'active' : ''} onClick={() => setSection('roles')}><UserCog /> Référents & accès</button>
+          <button className={section === 'people' ? 'active' : ''} onClick={() => setSection('people')}><Users /> Personnes & accès</button>
           <button onClick={() => { location.hash = `/syndic?building=${encodeURIComponent(slug)}` }}><Wrench /> Espace syndic</button>
         </nav>
         <div className="v2-sidebar-bottom">
@@ -257,8 +254,8 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
             </section>
 
             <div className="bm-grid">
-              <section className="bm-card"><div className="bm-card-head"><div><span>CONTINUITÉ</span><h3>Référents CoproLink</h3></div><UserCog /></div>{referentPeople.length ? referentPeople.map(person => <div className="bm-person-row" key={person.id}><CircleUserRound /><div><strong>{person.fullName}</strong><small>{person.unitLabel || relationLabel(person.relations)}</small></div><span>Référent</span></div>) : <div className="bm-empty"><UserCog /><strong>Aucun référent désigné</strong><p>Deux référents sont recommandés pour assurer la continuité.</p><button onClick={() => setSection('roles')}>Désigner des référents</button></div>}</section>
-              <section className="bm-card"><div className="bm-card-head"><div><span>ANNUAIRE</span><h3>Résidents & lots</h3></div><Users /></div><p className="bm-card-copy">{people.length} personne{people.length > 1 ? 's' : ''} et {units.length} lot{units.length > 1 ? 's' : ''} enregistrés.</p><button className="bm-primary" onClick={() => setSection('directory')}>Ouvrir l’annuaire <ChevronRight /></button></section>
+              <section className="bm-card"><div className="bm-card-head"><div><span>CONTINUITÉ</span><h3>Référents CoproLink</h3></div><UserCog /></div>{referentPeople.length ? referentPeople.map(person => <div className="bm-person-row" key={person.id}><CircleUserRound /><div><strong>{person.fullName}</strong><small>{person.unitLabel || relationLabel(person.relations)}</small></div><span>Référent</span></div>) : <div className="bm-empty"><UserCog /><strong>Aucun référent désigné</strong><p>Deux référents sont recommandés pour assurer la continuité.</p><button onClick={() => setSection('people')}>Gérer les personnes</button></div>}</section>
+              <section className="bm-card"><div className="bm-card-head"><div><span>PERSONNES & ACCÈS</span><h3>Résidents, lots et accès</h3></div><Users /></div><p className="bm-card-copy">{people.length} personne{people.length > 1 ? 's' : ''}, {units.length} lot{units.length > 1 ? 's' : ''} et {referentPeople.length} référent{referentPeople.length > 1 ? 's' : ''} enregistrés.</p><button className="bm-primary" onClick={() => setSection('people')}>Gérer les personnes <ChevronRight /></button></section>
               <section className="bm-card"><div className="bm-card-head"><div><span>SYNDIC / PROFESSIONNELS</span><h3>Intervenants liés</h3></div><Wrench /></div>{professionals.length ? professionals.map(item => <div className="bm-person-row" key={item.id}><Wrench /><div><strong>{item.organizationName || item.contactName || 'Professionnel'}</strong><small>{item.email || item.phone || item.professionalType}</small></div><span>{item.professionalType === 'syndic' ? 'Syndic' : 'Professionnel'}</span></div>) : <p className="bm-card-copy">Aucun professionnel enregistré.</p>}</section>
               <section className="bm-card"><div className="bm-card-head"><div><span>ÉCHÉANCES</span><h3>Prochaine date</h3></div><CalendarDays /></div>{nextEvent ? <div className="bm-next"><strong>{nextEvent.title}</strong><span>{nextEvent.eventDate} {nextEvent.eventTime || ''}</span></div> : <p className="bm-card-copy">Aucune date à venir.</p>}</section>
               <section className="bm-card"><div className="bm-card-head"><div><span>DOCUMENTS</span><h3>Mémoire de l’immeuble</h3></div><FileText /></div><strong className="bm-big-number">{documentsCount}</strong><p className="bm-card-copy">documents actuellement référencés.</p></section>
@@ -266,9 +263,11 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
           </div>
         )}
 
-        {section === 'directory' && (
+        {section === 'people' && (
           <div className="bm-content">
-            <div className="bm-page-head"><div><span>ANNUAIRE DE LA RÉSIDENCE</span><h2>Personnes, étages & lots</h2><p>Ajoutez une personne, complétez son e-mail et donnez-lui accès à CoproLink depuis le même écran.</p></div><button className="bm-primary" onClick={() => setShowAdd(value => !value)}><Plus /> Ajouter une personne</button></div>
+            <div className="bm-page-head"><div><span>PERSONNES & ACCÈS</span><h2>Résidents, lots, rôles et accès CoproLink</h2><p>Gérez au même endroit le lien au lot, l’accès numérique, la visibilité et le statut de Référent CoproLink.</p></div><button className="bm-primary" onClick={() => setShowAdd(value => !value)}><Plus /> Ajouter une personne</button></div>
+            <section className="bm-role-explainer"><article><UserCog /><h3>{referentPeople.length} référent{referentPeople.length > 1 ? 's' : ''}</h3><p>Les référents administrent CoproLink pour l’immeuble.</p></article><article><Users /><h3>{people.length} personne{people.length > 1 ? 's' : ''}</h3><p>Copropriétaires, occupants et locataires sont reliés à leurs lots.</p></article><article><Wrench /><h3>{professionals.length} professionnel{professionals.length > 1 ? 's' : ''}</h3><p>Le syndic et les prestataires restent séparés des résidents.</p></article></section>
+
             <div className="bm-directory-tools"><label><Search /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Rechercher un nom, un lot, un étage…" /></label><span>{directoryEntries.length} entrée{directoryEntries.length > 1 ? 's' : ''}</span></div>
 
             {showAdd && (
@@ -308,14 +307,6 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
               ))}
               {floors.length === 0 && <div className="bm-empty bm-empty-directory"><Users /><strong>Aucune personne à afficher</strong><p>Ajoutez une personne ou modifiez votre recherche.</p></div>}
             </div>
-          </div>
-        )}
-
-        {section === 'roles' && (
-          <div className="bm-content">
-            <div className="bm-page-head"><div><span>GOUVERNANCE</span><h2>Référents & accès</h2><p>Le statut dans la copropriété et l’accès numérique sont gérés séparément.</p></div></div>
-            <section className="bm-role-explainer"><article><UserCog /><h3>Référent CoproLink</h3><p>Administre l’espace CoproLink et ses accès, sans devenir syndic.</p></article><article><Wrench /><h3>Syndic</h3><p>Professionnel lié à l’immeuble, séparé des résidents.</p></article><article><Users /><h3>Copropriétaires & occupants</h3><p>Leur lien est porté par le lot et peut évoluer sans perdre l’historique.</p></article></section>
-            <section className="bm-card bm-referent-card"><div className="bm-card-head"><div><span>RÉFÉRENTS COPROLINK</span><h3>Continuité de l’espace</h3></div><UserCog /></div><p className="bm-card-copy">Deux référents sont recommandés pour éviter qu’un seul compte ne devienne indispensable.</p><div className="bm-referent-list">{residents.map(person => <label key={person.id}><span className="bm-avatar">{initials(person.fullName)}</span><div><strong>{person.fullName}</strong><small>{person.unitLabel || relationLabel(person.relations)}</small></div><input type="checkbox" checked={person.isReferent} onChange={event => toggleReferent(person.id, event.target.checked)} /></label>)}</div></section>
           </div>
         )}
       </section>
