@@ -31,13 +31,8 @@ export const buildings = pgTable("buildings", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
-/**
- * Miroir local des comptes Netlify Identity. Identity reste la source de vérité
- * pour l'authentification ; cette table sert de cible de clé étrangère et porte
- * le profil métier (nom affiché).
- */
 export const users = pgTable("users", {
-  id: text().primaryKey(), // identifiant Netlify Identity
+  id: text().primaryKey(),
   email: text().notNull(),
   fullName: text("full_name").notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -59,20 +54,6 @@ export const buildingMembers = pgTable("building_members", {
   index("building_members_user_idx").on(t.userId),
 ]);
 
-/**
- * Copropriétaires ajoutés par le syndic dont le compte Netlify Identity n'existe
- * pas encore (ou n'a pas pu être créé depuis la fonction, faute de jeton
- * opérateur sur le déploiement).
- *
- * L'appartenance est donc décidée AVANT que le compte n'existe : elle est
- * convertie en ligne de `building_members` dès la première connexion de cette
- * adresse (voir `claimPendingMemberships` dans auth.mts). Le syndic n'a ainsi
- * jamais besoin de passer par le tableau de bord Netlify.
- *
- * Pourquoi c'est sûr : Identity vérifie l'adresse (lien de confirmation ou
- * d'invitation) avant d'ouvrir une session, donc seule la personne qui contrôle
- * réellement la boîte peut réclamer l'accès préparé ici.
- */
 export const pendingMembers = pgTable("pending_members", {
   id: serial().primaryKey(),
   buildingId: integer("building_id").notNull().references(() => buildings.id, { onDelete: "cascade" }),
@@ -81,7 +62,6 @@ export const pendingMembers = pgTable("pending_members", {
   unitLabel: text("unit_label").notNull().default(""),
   shareLabel: text("share_label").notNull().default(""),
   fullName: text("full_name").notNull().default(""),
-  /** `true` quand l'e-mail d'invitation Identity a bien été envoyé. */
   invitationSent: boolean("invitation_sent").notNull().default(false),
   invitedByUserId: text("invited_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -99,12 +79,9 @@ export const tickets = pgTable("tickets", {
   location: text().notNull().default(""),
   description: text().notNull().default(""),
   status: text().notNull().default("new"),
-  /** Visible sur l'écran des communs. Jamais nominatif côté public. */
   isPublic: boolean("is_public").notNull().default(true),
-  /** Libellé non nominatif affichable côté syndic (ex. « Écran du hall »). */
   reporterLabel: text("reporter_label").notNull().default(""),
   reporterUserId: text("reporter_user_id").references(() => users.id, { onDelete: "set null" }),
-  /** Terminal à l'origine du signalement, le cas échéant. */
   reporterTerminalId: integer("reporter_terminal_id"),
   nextStep: text("next_step").notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
@@ -114,7 +91,6 @@ export const tickets = pgTable("tickets", {
   index("tickets_reporter_idx").on(t.reporterUserId),
 ]);
 
-/** Historique d'un ticket. Écrit à chaque changement de statut, jamais modifié. */
 export const ticketUpdates = pgTable("ticket_updates", {
   id: serial().primaryKey(),
   ticketId: integer("ticket_id").notNull().references(() => tickets.id, { onDelete: "cascade" }),
@@ -150,40 +126,24 @@ export const events = pgTable("events", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("events_building_date_idx").on(t.buildingId, t.eventDate)]);
 
-/**
- * Métadonnées documentaires. Le contenu binaire n'est pas encore stocké :
- * `storageKey` est réservé pour le passage à Netlify Blobs avec URLs signées.
- */
 export const documents = pgTable("documents", {
   id: serial().primaryKey(),
   buildingId: integer("building_id").notNull().references(() => buildings.id, { onDelete: "cascade" }),
   name: text().notNull(),
   fileType: text("file_type").notNull().default("PDF"),
-  /** "public" = affichable dans les communs. "private" = copropriétaires connectés. */
+  folder: text().notNull().default("Documents reçus"),
   access: text().notNull().default("private"),
   storageKey: text("storage_key"),
   updatedOn: date("updated_on").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("documents_building_access_idx").on(t.buildingId, t.access)]);
 
-/**
- * Terminaux physiques installés dans les communs. Chaque tablette reçoit un
- * jeton propre, stocké haché, révocable, sans compte utilisateur associé.
- */
 export const terminals = pgTable("terminals", {
   id: serial().primaryKey(),
   buildingId: integer("building_id").notNull().references(() => buildings.id, { onDelete: "cascade" }),
   label: text().notNull(),
-  /** SHA-256 du jeton. Le jeton en clair n'est affiché qu'une fois, à la création. */
   tokenHash: text("token_hash").notNull().unique(),
-  /** Aide au support : 6 derniers caractères du jeton, pour identifier une tablette. */
   tokenHint: text("token_hint").notNull().default(""),
-  /**
-   * Autorise la création de nouveaux signalements depuis ce terminal.
-   * Le jeton reste en lecture seule sur toutes les données existantes :
-   * aucune modification, aucun accès aux données privées, quelle que soit
-   * la valeur de ce drapeau.
-   */
   canReport: boolean("can_report").notNull().default(true),
   lastSeenAt: timestamp("last_seen_at"),
   revokedAt: timestamp("revoked_at"),
@@ -191,7 +151,6 @@ export const terminals = pgTable("terminals", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("terminals_building_idx").on(t.buildingId)]);
 
-/** Journal d'audit. Append-only : trace qui a fait quoi, et survit au syndic. */
 export const auditLog = pgTable("audit_log", {
   id: serial().primaryKey(),
   buildingId: integer("building_id").references(() => buildings.id, { onDelete: "cascade" }),
