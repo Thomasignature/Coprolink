@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import {
   Activity, AlertTriangle, Bell, Building2, CalendarDays, CheckCircle2, ChevronRight,
   ClipboardCopy, FileText, HelpCircle, Info, LayoutDashboard, LogOut, Mail, RefreshCw,
@@ -96,25 +96,22 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
   const filteredDocuments = needle ? data.documents.filter(d => `${d.name} ${d.fileType} ${d.buildingName}`.toLowerCase().includes(needle)) : data.documents
   const filteredEvents = needle ? data.events.filter(e => `${e.title} ${e.detail} ${e.buildingName}`.toLowerCase().includes(needle)) : data.events
 
-  const notifications = useMemo(() => {
-    const ticketItems = (data.tickets || [])
-      .filter(item => prefs.showResolvedNotifications || item.status !== 'resolved')
-      .filter(item => ['new', 'waiting'].includes(item.status))
-      .map(item => ({
-        id: `ticket-${item.id}`, type: 'ticket', icon: <Wrench size={16} />,
-        title: item.title, meta: `${item.buildingName} · ${ticketLabel(item.status)}`,
-        when: 'À traiter', onClick: () => goBuilding(item.buildingSlug),
-      }))
-    const eventItems = (data.events || [])
-      .filter(item => daysUntil(item.eventDate) >= 0 && daysUntil(item.eventDate) <= Number(prefs.reminderDays || 14))
-      .map(item => ({
-        id: `event-${item.id}`, type: 'event', icon: <CalendarDays size={16} />,
-        title: item.title, meta: item.buildingName,
-        when: relativeDate(item.eventDate), onClick: () => goBuilding(item.buildingSlug),
-      }))
-    return [...ticketItems, ...eventItems].slice(0, 12)
-  }, [data, prefs])
-
+  const ticketNotifications = (data.tickets || [])
+    .filter(item => prefs.showResolvedNotifications || item.status !== 'resolved')
+    .filter(item => ['new', 'waiting'].includes(item.status))
+    .map(item => ({
+      id: `ticket-${item.id}`, type: 'ticket', icon: <Wrench size={16} />,
+      title: item.title, meta: `${item.buildingName} · ${ticketLabel(item.status)}`,
+      when: 'À traiter', onClick: () => goBuilding(item.buildingSlug),
+    }))
+  const eventNotifications = (data.events || [])
+    .filter(item => daysUntil(item.eventDate) >= 0 && daysUntil(item.eventDate) <= Number(prefs.reminderDays || 14))
+    .map(item => ({
+      id: `event-${item.id}`, type: 'event', icon: <CalendarDays size={16} />,
+      title: item.title, meta: item.buildingName,
+      when: relativeDate(item.eventDate), onClick: () => goBuilding(item.buildingSlug),
+    }))
+  const notifications = [...ticketNotifications, ...eventNotifications].slice(0, 12)
   const showSearch = !['help', 'settings'].includes(portfolioView)
 
   return (
