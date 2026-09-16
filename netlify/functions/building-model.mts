@@ -6,7 +6,7 @@ import {
   personVisibilityPreferences, PROFESSIONAL_TYPES, RELATION_TYPES, unitPersonRelations,
   type ProfessionalType, type RelationType,
 } from "../../db/schema-v3.js";
-import { authorize, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { authorizeCoproLinkAdmin, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import { readString, writeAudit } from "../lib/data.mts";
 
 const readId = (value: unknown, field = "id") => {
@@ -19,16 +19,12 @@ const optionalString = (value: unknown, field: string, max = 200) =>
   readString(value, field, { max, required: false });
 
 const assertRelationType = (value: unknown): RelationType => {
-  if (typeof value !== "string" || !RELATION_TYPES.includes(value as RelationType)) {
-    throw new HttpError(422, "Lien au lot invalide");
-  }
+  if (typeof value !== "string" || !RELATION_TYPES.includes(value as RelationType)) throw new HttpError(422, "Lien au lot invalide");
   return value as RelationType;
 };
 
 const assertProfessionalType = (value: unknown): ProfessionalType => {
-  if (typeof value !== "string" || !PROFESSIONAL_TYPES.includes(value as ProfessionalType)) {
-    throw new HttpError(422, "Type de professionnel invalide");
-  }
+  if (typeof value !== "string" || !PROFESSIONAL_TYPES.includes(value as ProfessionalType)) throw new HttpError(422, "Type de professionnel invalide");
   return value as ProfessionalType;
 };
 
@@ -49,8 +45,7 @@ const readModel = async (buildingId: number) => {
     shareLabel: unitPersonRelations.shareLabel,
     startDate: unitPersonRelations.startDate,
     endDate: unitPersonRelations.endDate,
-  })
-    .from(unitPersonRelations)
+  }).from(unitPersonRelations)
     .innerJoin(buildingUnits, eq(unitPersonRelations.unitId, buildingUnits.id))
     .where(eq(buildingUnits.buildingId, buildingId));
 
@@ -61,9 +56,7 @@ const readModel = async (buildingId: number) => {
     .where(eq(buildingProfessionals.buildingId, buildingId))
     .orderBy(asc(buildingProfessionals.professionalType), asc(buildingProfessionals.organizationName));
 
-  const visibility = people.length
-    ? await db.select().from(personVisibilityPreferences)
-    : [];
+  const visibility = people.length ? await db.select().from(personVisibilityPreferences) : [];
   const allowedPersonIds = new Set(people.map((person) => person.id));
 
   return {
@@ -93,12 +86,10 @@ const assertPersonInBuilding = async (buildingId: number, personId: number) => {
 
 export default async (req: Request) => {
   try {
-    const ctx = await authorize(req, { buildingSlug: readBuildingSlug(req), require: "members:manage" });
+    const ctx = await authorizeCoproLinkAdmin(req, readBuildingSlug(req));
     const url = new URL(req.url);
 
-    if (req.method === "GET") {
-      return Response.json(await readModel(ctx.buildingId), { headers: { "cache-control": "no-store" } });
-    }
+    if (req.method === "GET") return Response.json(await readModel(ctx.buildingId), { headers: { "cache-control": "no-store" } });
 
     const body = await req.json().catch(() => ({}));
     const entity = String(body.entity ?? url.searchParams.get("entity") ?? "");
@@ -156,11 +147,7 @@ export default async (req: Request) => {
       if (entity === "referent") {
         const personId = readId(body.personId, "personne");
         await assertPersonInBuilding(ctx.buildingId, personId);
-        const [created] = await db.insert(buildingReferents).values({
-          buildingId: ctx.buildingId,
-          personId,
-          isPrimary: body.isPrimary === true,
-        }).returning();
+        const [created] = await db.insert(buildingReferents).values({ buildingId: ctx.buildingId, personId, isPrimary: body.isPrimary === true }).returning();
         await writeAudit(ctx, { action: "referent.created", entityType: "building_referent", entityId: created.id, summary: "Référent CoproLink désigné." });
         return Response.json(created, { status: 201 });
       }
@@ -298,6 +285,4 @@ export default async (req: Request) => {
   }
 };
 
-export const config: Config = {
-  path: "/api/building-model",
-};
+export const config: Config = { path: "/api/building-model" };
