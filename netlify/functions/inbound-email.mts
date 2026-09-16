@@ -1,5 +1,5 @@
 import type { Config } from "@netlify/functions";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { buildings } from "../../db/schema.js";
 import { inboundEmails } from "../../db/schema-v3.js";
@@ -20,7 +20,33 @@ const safeJson = (value: unknown, fallback: string) => {
   try { return JSON.stringify(value ?? JSON.parse(fallback)); } catch { return fallback; }
 };
 
+const ensureInboundEmailTable = async () => {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS inbound_emails (
+      id serial PRIMARY KEY,
+      building_id integer NOT NULL REFERENCES buildings(id) ON DELETE CASCADE,
+      provider text NOT NULL DEFAULT 'resend',
+      provider_email_id text NOT NULL,
+      message_id text NOT NULL DEFAULT '',
+      from_address text NOT NULL DEFAULT '',
+      from_name text NOT NULL DEFAULT '',
+      to_address text NOT NULL DEFAULT '',
+      subject text NOT NULL DEFAULT '',
+      text_body text NOT NULL DEFAULT '',
+      html_body text NOT NULL DEFAULT '',
+      attachments_json text NOT NULL DEFAULT '[]',
+      raw_event_json text NOT NULL DEFAULT '{}',
+      processing_status text NOT NULL DEFAULT 'received',
+      received_at timestamp NOT NULL DEFAULT now(),
+      created_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS inbound_emails_provider_email_idx ON inbound_emails(provider, provider_email_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS inbound_emails_building_received_idx ON inbound_emails(building_id, received_at)`);
+};
+
 const readInboundList = async (req: Request) => {
+  await ensureInboundEmailTable();
   const ctx = await authorizeCoproLinkAdmin(req, readBuildingSlug(req));
   const rows = await db.select().from(inboundEmails)
     .where(eq(inboundEmails.buildingId, ctx.buildingId))
@@ -36,6 +62,7 @@ const readInboundList = async (req: Request) => {
 };
 
 const receiveResendWebhook = async (req: Request) => {
+  await ensureInboundEmailTable();
   const url = new URL(req.url);
   const expectedToken = Netlify.env.get("COPROLINK_INBOUND_TEST_TOKEN") || "";
   const suppliedToken = url.searchParams.get("token") || "";
