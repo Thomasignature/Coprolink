@@ -20,4 +20,6 @@ export const apiV3 = {
   create: (slug, entity, data) => request(`/api/building-model${q(slug)}`, { method: 'POST', body: { entity, ...data } }),
   update: (slug, entity, id, data) => request(`/api/building-model${q(slug)}`, { method: 'PATCH', body: { entity, id, ...data } }),
   remove: (slug, entity, id) => request(`/api/building-model${q(slug)}`, { method: 'DELETE', body: { entity, id } }),
+  accessStates: slug => request(`/api/person-access${q(slug)}`),
+  invitePerson: (slug, personId) => request(`/api/person-access${q(slug)}`, { method: 'POST', body: { personId } }),
 }
