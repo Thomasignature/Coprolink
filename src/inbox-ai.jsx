@@ -49,7 +49,7 @@ const parseDate = text => {
 const toTime = (hour, minute = '0') => `${pad(Math.min(23, Number(hour)))}:${pad(Math.min(59, Number(minute || 0)))}`
 const parseTimes = text => {
   const source = lower(text)
-  const range = source.match(/(?:entre|de)?\s*(\d{1,2})(?:\s*[h:]\s*(\d{1,2}))?\s*h?\s*(?:et|à|a|\-|–)\s*(\d{1,2})(?:\s*[h:]\s*(\d{1,2}))?\s*h?\b/)
+  const range = source.match(/\b(?:entre|de)\s+(\d{1,2})(?:\s*(?:h|:)\s*(\d{1,2}))?\s*(?:et|à|a|\-|–)\s*(\d{1,2})(?:\s*(?:h|:)\s*(\d{1,2}))?\b/)
   if (range) return { start: toTime(range[1], range[2]), end: toTime(range[3], range[4]) }
   const single = source.match(/\b(\d{1,2})\s*(?:h|:)\s*(\d{1,2})?\b/)
   return single ? { start: toTime(single[1], single[2]), end: null } : { start: null, end: null }
@@ -60,7 +60,7 @@ const classify = text => {
   if (/\bT-\d{4,}\b/i.test(text) || /signalement|ticket/.test(value)) return { key: 'ticket_reply', label: 'Réponse à un signalement' }
   if (/assembl[ée]e g[ée]n[ée]rale|\bag\b|proc[èe]s-verbal|\bpv\b/.test(value)) return { key: 'meeting', label: 'Assemblée générale' }
   if (/contrat|[ée]ch[ée]ance|renouvellement|assurance|police/.test(value)) return { key: 'contract', label: 'Contrat / échéance' }
-  if (/ascenseur|intervention|technicien|entretien|maintenance|travaux|plombier|chauffagiste|passage/.test(value)) return { key: 'intervention', label: 'Intervention' }
+  if (/ascenseur|intervention|technicien|entretien|maintenance|travaux|plombier|chauffagiste|passage|peinture|peindre|carreleur/.test(value)) return { key: 'intervention', label: 'Intervention' }
   if (/facture|devis|rapport|annexe|pi[èe]ce jointe|document/.test(value)) return { key: 'document', label: 'Document' }
   return { key: 'information', label: 'Information' }
 }
@@ -72,7 +72,7 @@ const folderFor = text => {
   if (/assurance|police/.test(value)) return 'Assurances'
   if (/contrat|[ée]ch[ée]ance/.test(value)) return 'Contrats'
   if (/facture|devis/.test(value)) return 'Comptabilité'
-  if (/travaux|intervention|maintenance|entretien/.test(value)) return 'Interventions'
+  if (/travaux|intervention|maintenance|entretien|peinture|peindre|carreleur/.test(value)) return 'Interventions'
   return 'Documents reçus'
 }
 
@@ -109,6 +109,7 @@ export default function InboxAIView({ session, onLogout }) {
   const [state, setState] = useState({ status: 'loading', emails: [], error: '' })
   const [selectedId, setSelectedId] = useState(null)
   const [query, setQuery] = useState('')
+  const [actionState, setActionState] = useState({ emailId: null, error: '' })
 
   const building = eligibleBuildings.find(item => item.buildingSlug === buildingSlug) || eligibleBuildings[0]
 
@@ -140,6 +141,25 @@ export default function InboxAIView({ session, onLogout }) {
     dates: emails.filter(item => item.analysis.eventDate).length,
     attachments: emails.reduce((sum, item) => sum + item.analysis.files.length, 0),
   }), [emails])
+
+  const createCalendarEvent = async mail => {
+    if (!mail?.analysis?.eventDate || actionState.emailId) return
+    setActionState({ emailId: mail.id, error: '' })
+    try {
+      await apiV3.executeInboundAction(buildingSlug, {
+        emailId: mail.id,
+        action: 'create_calendar_event',
+        title: mail.subject || mail.analysis.classification.label,
+        detail: mail.analysis.summary,
+        eventDate: mail.analysis.eventDate,
+        eventTime: mail.analysis.times.start || '',
+      })
+      await load()
+      setActionState({ emailId: null, error: '' })
+    } catch (error) {
+      setActionState({ emailId: null, error: error.message || 'Impossible de créer l’événement.' })
+    }
+  }
 
   const changeBuilding = slug => {
     setBuildingSlug(slug)
@@ -182,7 +202,7 @@ export default function InboxAIView({ session, onLogout }) {
           </div>
         </header>
 
-        <section className="ai-safety-note"><Bot /><div><strong>Réception réelle, actions encore simulées</strong><span>Le mail est réellement reçu et stocké. CoproLink l’interprète, mais ne modifie encore ni calendrier, ni documents, ni signalements.</span></div></section>
+        <section className="ai-safety-note"><Bot /><div><strong>Réception réelle, actions sur validation</strong><span>Le mail est réellement reçu et stocké. CoproLink propose les actions détectées ; rien n’est exécuté sans ton clic de validation.</span></div></section>
 
         <section className="ai-stats">
           <article><Mail /><div><strong>{totals.emails}</strong><span>mails réellement reçus</span></div></article>
@@ -198,11 +218,11 @@ export default function InboxAIView({ session, onLogout }) {
               {state.status === 'loading' && <div className="ai-empty"><RefreshCw /><strong>Chargement des e-mails…</strong></div>}
               {state.status === 'error' && <div className="ai-empty"><ShieldCheck /><strong>Inbox indisponible</strong><span>{state.error}</span><button className="ai-mini-launch" onClick={load}>Réessayer</button></div>}
               {state.status !== 'loading' && state.status !== 'error' && <div className="ai-message-list">
-                {filtered.map(mail => <button key={mail.id} className={mail.id === selected?.id ? 'selected' : ''} onClick={() => setSelectedId(mail.id)}>
+                {filtered.map(mail => <button key={mail.id} className={mail.id === selected?.id ? 'selected' : ''} onClick={() => { setSelectedId(mail.id); setActionState({ emailId: null, error: '' }) }}>
                   <span className="ai-avatar">{(mail.fromName || mail.fromAddress || '?').slice(0, 1).toUpperCase()}</span>
                   <span className="ai-message-copy"><strong>{mail.subject || '(Sans objet)'}</strong><small>{mail.fromName || mail.fromAddress} · {mail.analysis.classification.label}</small></span>
                   <span className="ai-confidence">{mail.analysis.confidence}%</span>
-                  <em>{mail.processingStatus === 'content_ready' ? 'contenu lu' : 'en attente'}</em>
+                  <em>{mail.calendarEventId ? 'agenda créé' : mail.processingStatus === 'content_ready' ? 'contenu lu' : 'en attente'}</em>
                 </button>)}
                 {filtered.length === 0 && <div className="ai-empty"><Inbox /><strong>Aucun e-mail reçu</strong><span>Envoie un nouveau message à l’adresse Resend de cet immeuble puis clique sur Actualiser.</span></div>}
               </div>}
@@ -214,12 +234,13 @@ export default function InboxAIView({ session, onLogout }) {
               <div className="ai-card-head"><div><span>INTERPRÉTATION</span><h2>{selected ? 'CoproLink a lu ce mail' : 'En attente d’un e-mail'}</h2></div>{selected && <span className="ai-confidence-large">{selected.analysis.confidence}%</span>}</div>
               {selected ? <>
                 <div className="ai-analysis-summary"><div className="ai-analysis-icon"><Bot /></div><div><span className="ai-type-chip">{selected.analysis.classification.label}</span><h3>{selected.analysis.summary}</h3><p>{selected.fromName || selected.fromAddress}{selected.analysis.eventDate ? ` · ${formatDate(selected.analysis.eventDate)}` : ''}{selected.analysis.ticketRef ? ` · ${selected.analysis.ticketRef}` : ''}</p></div></div>
-                <div className="ai-actions-title"><strong>Données comprises par CoproLink</strong><span>Aucune action n’est encore exécutée automatiquement.</span></div>
+                <div className="ai-actions-title"><strong>Actions proposées par CoproLink</strong><span>Validation humaine obligatoire.</span></div>
                 <div className="ai-action-list">
-                  {selected.analysis.eventDate && <article className="ai-action"><span className="ai-action-icon"><CalendarDays /></span><div><strong>Date détectée</strong><p>{formatDate(selected.analysis.eventDate)}{selected.analysis.times.start ? ` · ${selected.analysis.times.start}${selected.analysis.times.end ? `–${selected.analysis.times.end}` : ''}` : ''}</p></div><span className="ai-action-status">Détectée</span></article>}
+                  {selected.analysis.eventDate && <article className={`ai-action ${selected.calendarEventId ? 'executed' : 'review'}`}><span className="ai-action-icon"><CalendarDays /></span><div><strong>Ajouter cette intervention au calendrier</strong><p>{formatDate(selected.analysis.eventDate)}{selected.analysis.times.start ? ` · ${selected.analysis.times.start}${selected.analysis.times.end ? `–${selected.analysis.times.end}` : ''}` : ' · heure non précisée'}</p><small>{selected.subject || selected.analysis.summary}</small></div><span className={`ai-action-status ${selected.calendarEventId ? 'executed' : 'review'}`}>{selected.calendarEventId ? 'Ajouté' : 'À valider'}</span>{!selected.calendarEventId && <div className="ai-action-buttons"><button className="approve" disabled={actionState.emailId === selected.id} onClick={() => createCalendarEvent(selected)}><CheckCircle2 /> {actionState.emailId === selected.id ? 'Ajout en cours…' : 'Valider et ajouter'}</button></div>}</article>}
                   {selected.analysis.ticketRef && <article className="ai-action"><span className="ai-action-icon"><TicketCheck /></span><div><strong>Signalement reconnu</strong><p>{selected.analysis.ticketRef}</p></div><span className="ai-action-status">Détecté</span></article>}
                   {selected.analysis.files.map((name, index) => <article className="ai-action" key={`${name}-${index}`}><span className="ai-action-icon"><FileText /></span><div><strong>{name}</strong><p>Classement proposé : {folderFor(`${selected.subject}\n${selected.analysis.body}`)}</p></div><span className="ai-action-status">Pièce jointe</span></article>)}
                 </div>
+                {actionState.error && <p style={{color:'#9a4f48',fontSize:'10px',margin:'10px 2px'}}>{actionState.error}</p>}
                 <div className="ai-output-section"><div className="ai-output-heading"><Mail /><strong>Contenu reçu</strong><span>{selected.processingStatus === 'content_ready' ? 'OK' : '…'}</span></div><p className="ai-mini-empty" style={{fontSize:'10px',lineHeight:'1.6',whiteSpace:'pre-wrap'}}>{selected.analysis.body || 'Le corps du mail n’a pas encore pu être récupéré depuis Resend.'}</p></div>
               </> : <div className="ai-result-empty"><Sparkles /><p>Envoie un mail à l’adresse de la copropriété pour le voir apparaître ici.</p></div>}
             </section>
