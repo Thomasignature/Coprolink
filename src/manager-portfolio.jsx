@@ -10,11 +10,13 @@ import BuildingManagementView from './building-management.jsx'
 import PreviewAsView from './preview-as.jsx'
 import BuildingModelV3View from './building-model-v3.jsx'
 
+const goPortfolioView = view => { location.hash = view === 'dashboard' ? '/portfolio' : `/portfolio?view=${encodeURIComponent(view)}` }
 const goBuilding = slug => { location.hash = `/portfolio?view=building&building=${encodeURIComponent(slug)}` }
 const goInbox = slug => { location.hash = `/portfolio?view=inbox${slug ? `&building=${encodeURIComponent(slug)}` : ''}` }
 
 const statusLabel = status => ({ ok: 'Sous contrôle', watch: 'À surveiller', action: 'Action requise' }[status] || 'Sous contrôle')
 const statusClass = status => ({ ok: 'v2-status-ok', watch: 'v2-status-watch', action: 'v2-status-action' }[status] || 'v2-status-ok')
+const ticketLabel = status => ({ new: 'Nouveau', waiting: 'À relancer', scheduled: 'Planifié', resolved: 'Résolu', in_progress: 'En cours' }[status] || 'En cours')
 
 const relativeDate = value => {
   if (!value) return 'Aucune date'
@@ -23,6 +25,11 @@ const relativeDate = value => {
   if (diff <= 0) return "aujourd’hui"
   if (diff === 1) return 'demain'
   return `dans ${diff} jours`
+}
+
+const dateLabel = value => {
+  if (!value) return '—'
+  return new Intl.DateTimeFormat('fr-BE', { day: '2-digit', month: 'short', year: 'numeric' }).format(new Date(`${value}T12:00:00`))
 }
 
 export default function ManagerPortfolioView({ session, onLogout, setToast }) {
@@ -36,6 +43,7 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
   const buildingMode = view === 'building'
   const previewMode = view === 'preview'
   const modelV3Mode = view === 'model-v3'
+  const portfolioView = ['dashboard', 'buildings', 'tickets', 'documents', 'deadlines'].includes(view) ? view : 'dashboard'
 
   const load = async () => {
     setState(s => ({ ...s, status: s.data ? 'refreshing' : 'loading', error: null }))
@@ -47,12 +55,11 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
     }
   }
 
-  useEffect(() => { if (!inboxMode && !buildingMode && !previewMode && !modelV3Mode) load() }, [inboxMode, buildingMode, previewMode, modelV3Mode])
+  useEffect(() => { if (!inboxMode && !buildingMode && !previewMode && !modelV3Mode) load() }, [inboxMode, buildingMode, previewMode, modelV3Mode, portfolioView])
 
   if (inboxMode) return <InboxAIView session={session} onLogout={onLogout} />
   if (buildingMode) return <BuildingManagementView session={session} buildingSlug={buildingSlug} onLogout={onLogout} />
   if (previewMode) return <PreviewAsView session={session} buildingSlug={buildingSlug} initialRole={previewRole} onLogout={onLogout} setToast={setToast} />
-  // Route de diagnostic conservée pour la validation, mais non exposée dans la navigation utilisateur.
   if (modelV3Mode) return <BuildingModelV3View buildingSlug={buildingSlug} setToast={setToast} onBack={() => goBuilding(buildingSlug)} />
   if (state.status === 'loading') return <Spinner label="Chargement de votre espace…" />
   if (state.status === 'error') return <ErrorPanel title="Espace indisponible" message={state.error} onRetry={load} />
@@ -63,17 +70,26 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
   const filteredBuildings = needle
     ? data.buildings.filter(b => `${b.name} ${b.address}`.toLowerCase().includes(needle))
     : data.buildings
+  const filteredTickets = needle
+    ? data.tickets.filter(t => `${t.reference} ${t.title} ${t.location} ${t.buildingName}`.toLowerCase().includes(needle))
+    : data.tickets
+  const filteredDocuments = needle
+    ? data.documents.filter(d => `${d.name} ${d.fileType} ${d.buildingName}`.toLowerCase().includes(needle))
+    : data.documents
+  const filteredEvents = needle
+    ? data.events.filter(e => `${e.title} ${e.detail} ${e.buildingName}`.toLowerCase().includes(needle))
+    : data.events
 
   return (
     <main className="v2-shell v2-manager-shell">
       <aside className="v2-sidebar">
         <Logo />
         <nav>
-          <button className="active"><LayoutDashboard /> Tableau de bord</button>
-          <button onClick={() => data.buildings[0] && goBuilding(data.buildings[0].slug)}><Building2 /> Copropriétés</button>
-          <button><Wrench /> Signalements</button>
-          <button><FileText /> Documents</button>
-          <button><CalendarDays /> Échéances</button>
+          <button className={portfolioView === 'dashboard' ? 'active' : ''} onClick={() => goPortfolioView('dashboard')}><LayoutDashboard /> Tableau de bord</button>
+          <button className={portfolioView === 'buildings' ? 'active' : ''} onClick={() => goPortfolioView('buildings')}><Building2 /> Copropriétés</button>
+          <button className={portfolioView === 'tickets' ? 'active' : ''} onClick={() => goPortfolioView('tickets')}><Wrench /> Signalements</button>
+          <button className={portfolioView === 'documents' ? 'active' : ''} onClick={() => goPortfolioView('documents')}><FileText /> Documents</button>
+          <button className={portfolioView === 'deadlines' ? 'active' : ''} onClick={() => goPortfolioView('deadlines')}><CalendarDays /> Échéances</button>
         </nav>
         <div className="v2-sidebar-bottom">
           <button><HelpCircle /> Aide & support</button>
@@ -89,95 +105,142 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
       <section className="v2-main">
         <header className="v2-manager-topbar">
           <div>
-            <h1>Bonjour {firstName} 👋</h1>
-            <p>Voici ce qui mérite votre attention aujourd’hui.</p>
+            <h1>{portfolioView === 'dashboard' ? `Bonjour ${firstName} 👋` : titleForView(portfolioView)}</h1>
+            <p>{subtitleForView(portfolioView)}</p>
           </div>
           <div className="v2-manager-tools">
-            <label className="v2-search"><Search /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Rechercher une copropriété…" /></label>
+            <label className="v2-search"><Search /><input value={query} onChange={e => setQuery(e.target.value)} placeholder={searchPlaceholder(portfolioView)} /></label>
             <button className="v2-icon-btn" aria-label="Notifications"><Bell /></button>
           </div>
         </header>
 
-        <section className="v2-manager-hero">
-          <div className="v2-manager-hero-copy">
-            <CheckCircle2 />
-            <div><h2>{data.summary.attention ? `${data.summary.attention} élément${data.summary.attention > 1 ? 's' : ''} à suivre` : 'Tout est sous contrôle'}</h2><p>CoproLink centralise les informations importantes de vos copropriétés et fait remonter les actions utiles.</p></div>
-          </div>
-          <div className="v2-manager-stats">
-            <article><Building2 /><strong>{data.summary.buildings}</strong><span>copropriétés</span></article>
-            <article><Bell /><strong>{data.summary.attention}</strong><span>éléments à traiter</span></article>
-            <article><CalendarDays /><strong>{data.summary.upcoming}</strong><span>échéances proches</span></article>
-            <article className={data.summary.openTickets ? 'attention' : ''}><AlertTriangle /><strong>{data.summary.openTickets}</strong><span>signalements ouverts</span></article>
-          </div>
-        </section>
-
-        <div className="v2-manager-grid">
-          <section className="v2-panel v2-priority-panel">
-            <div className="v2-panel-head"><div><span>PRIORITÉS</span><h3>À traiter</h3></div></div>
-            <div className="v2-priority-list">
-              {data.priority.length === 0
-                ? <div className="v2-empty"><CheckCircle2 /><strong>Aucune priorité urgente</strong><span>Votre espace est à jour.</span></div>
-                : data.priority.slice(0, 5).map(item => (
-                  <button key={item.id} onClick={() => goBuilding(item.buildingSlug)}>
-                    <span className="v2-round-icon"><Wrench /></span>
-                    <div><strong>{item.buildingName}</strong><small>{item.title}{item.location ? ` · ${item.location}` : ''}</small></div>
-                    <em className={item.status === 'new' ? 'urgent' : item.status === 'waiting' ? 'wait' : ''}>{item.status === 'new' ? 'Nouveau' : item.status === 'waiting' ? 'À relancer' : 'En cours'}</em>
-                    <ChevronRight />
-                  </button>
-                ))}
-            </div>
-          </section>
-
-          <section className="v2-panel v2-portfolio-panel">
-            <div className="v2-panel-head"><div><span>COPROPRIÉTÉS</span><h3>Vue d’ensemble</h3></div><small>{filteredBuildings.length} copropriété{filteredBuildings.length > 1 ? 's' : ''}</small></div>
-            <div className="v2-portfolio-table">
-              <div className="head"><span>Copropriété</span><span>Statut</span><span>Signalements</span><span>Prochaine date</span><span /></div>
-              {filteredBuildings.map(building => (
-                <button key={building.id} onClick={() => goBuilding(building.slug)}>
-                  <span><strong>{building.name}</strong><small>{building.address}</small></span>
-                  <span><i className={statusClass(building.status)}>{statusLabel(building.status)}</i></span>
-                  <span className={building.openTickets ? 'v2-count-alert' : ''}>{building.openTickets}</span>
-                  <span>{building.nextEvent ? relativeDate(building.nextEvent.eventDate) : '—'}</span>
-                  <ChevronRight />
-                </button>
-              ))}
-            </div>
-          </section>
-
-          <section className="v2-panel">
-            <div className="v2-panel-head"><div><span>ÉCHÉANCES</span><h3>Prochaines dates</h3></div><CalendarDays /></div>
-            <div className="v2-simple-list">
-              {data.upcoming.slice(0, 5).map(item => (
-                <button key={item.id} onClick={() => goBuilding(item.buildingSlug)}>
-                  <CalendarDays /><div><strong>{item.buildingName}</strong><small>{item.title}</small></div><span>{relativeDate(item.eventDate)}</span><ChevronRight />
-                </button>
-              ))}
-              {data.upcoming.length === 0 && <p>Aucune échéance proche.</p>}
-            </div>
-          </section>
-
-          <section className="v2-panel">
-            <div className="v2-panel-head"><div><span>AUTOMATISATION</span><h3>Inbox intelligente</h3></div><Sparkles /></div>
-            <div className="v2-inbox-placeholder ai-ready-card">
-              <BotPreview />
-              <strong>Bientôt disponible</strong>
-              <p>CoproLink pourra transformer les e-mails reçus en échéances, documents, signalements et communications structurées.</p>
-            </div>
-          </section>
-
-          <section className="v2-panel">
-            <div className="v2-panel-head"><div><span>ACTIVITÉ</span><h3>Activité récente</h3></div><Activity /></div>
-            <div className="v2-activity-list">
-              {data.activity.slice(0, 5).map(item => (
-                <div key={item.id}><span /><p><strong>{item.summary}</strong><small>{item.buildingName || 'CoproLink'} · {new Date(item.createdAt).toLocaleString('fr-BE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></p></div>
-              ))}
-              {data.activity.length === 0 && <p>Aucune activité récente.</p>}
-            </div>
-          </section>
-        </div>
+        {portfolioView === 'dashboard' && <DashboardView data={data} filteredBuildings={filteredBuildings} goBuilding={goBuilding} />}
+        {portfolioView === 'buildings' && <BuildingsView buildings={filteredBuildings} goBuilding={goBuilding} />}
+        {portfolioView === 'tickets' && <TicketsView tickets={filteredTickets} goBuilding={goBuilding} />}
+        {portfolioView === 'documents' && <DocumentsView documents={filteredDocuments} goBuilding={goBuilding} />}
+        {portfolioView === 'deadlines' && <DeadlinesView events={filteredEvents} goBuilding={goBuilding} />}
       </section>
     </main>
   )
+}
+
+function DashboardView({ data, filteredBuildings, goBuilding }) {
+  return (
+    <>
+      <section className="v2-manager-hero">
+        <div className="v2-manager-hero-copy">
+          <CheckCircle2 />
+          <div><h2>{data.summary.attention ? `${data.summary.attention} élément${data.summary.attention > 1 ? 's' : ''} à suivre` : 'Tout est sous contrôle'}</h2><p>CoproLink centralise les informations importantes de vos copropriétés et fait remonter les actions utiles.</p></div>
+        </div>
+        <div className="v2-manager-stats">
+          <article><Building2 /><strong>{data.summary.buildings}</strong><span>copropriétés</span></article>
+          <article><Bell /><strong>{data.summary.attention}</strong><span>éléments à traiter</span></article>
+          <article><CalendarDays /><strong>{data.summary.upcoming}</strong><span>échéances proches</span></article>
+          <article className={data.summary.openTickets ? 'attention' : ''}><AlertTriangle /><strong>{data.summary.openTickets}</strong><span>signalements ouverts</span></article>
+        </div>
+      </section>
+
+      <div className="v2-manager-grid">
+        <section className="v2-panel v2-priority-panel">
+          <div className="v2-panel-head"><div><span>PRIORITÉS</span><h3>À traiter</h3></div></div>
+          <div className="v2-priority-list">
+            {data.priority.length === 0
+              ? <div className="v2-empty"><CheckCircle2 /><strong>Aucune priorité urgente</strong><span>Votre espace est à jour.</span></div>
+              : data.priority.slice(0, 5).map(item => (
+                <button key={item.id} onClick={() => goBuilding(item.buildingSlug)}>
+                  <span className="v2-round-icon"><Wrench /></span>
+                  <div><strong>{item.buildingName}</strong><small>{item.title}{item.location ? ` · ${item.location}` : ''}</small></div>
+                  <em className={item.status === 'new' ? 'urgent' : item.status === 'waiting' ? 'wait' : ''}>{ticketLabel(item.status)}</em>
+                  <ChevronRight />
+                </button>
+              ))}
+          </div>
+        </section>
+
+        <section className="v2-panel v2-portfolio-panel">
+          <div className="v2-panel-head"><div><span>COPROPRIÉTÉS</span><h3>Vue d’ensemble</h3></div><small>{filteredBuildings.length} copropriété{filteredBuildings.length > 1 ? 's' : ''}</small></div>
+          <div className="v2-portfolio-table">
+            <div className="head"><span>Copropriété</span><span>Statut</span><span>Signalements</span><span>Prochaine date</span><span /></div>
+            {filteredBuildings.map(building => (
+              <button key={building.id} onClick={() => goBuilding(building.slug)}>
+                <span><strong>{building.name}</strong><small>{building.address}</small></span>
+                <span><i className={statusClass(building.status)}>{statusLabel(building.status)}</i></span>
+                <span className={building.openTickets ? 'v2-count-alert' : ''}>{building.openTickets}</span>
+                <span>{building.nextEvent ? relativeDate(building.nextEvent.eventDate) : '—'}</span>
+                <ChevronRight />
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="v2-panel">
+          <div className="v2-panel-head"><div><span>ÉCHÉANCES</span><h3>Prochaines dates</h3></div><CalendarDays /></div>
+          <div className="v2-simple-list">
+            {data.upcoming.slice(0, 5).map(item => (
+              <button key={item.id} onClick={() => goBuilding(item.buildingSlug)}>
+                <CalendarDays /><div><strong>{item.buildingName}</strong><small>{item.title}</small></div><span>{relativeDate(item.eventDate)}</span><ChevronRight />
+              </button>
+            ))}
+            {data.upcoming.length === 0 && <p>Aucune échéance proche.</p>}
+          </div>
+        </section>
+
+        <section className="v2-panel">
+          <div className="v2-panel-head"><div><span>AUTOMATISATION</span><h3>Inbox intelligente</h3></div><Sparkles /></div>
+          <div className="v2-inbox-placeholder ai-ready-card">
+            <BotPreview />
+            <strong>Bientôt disponible</strong>
+            <p>CoproLink pourra transformer les e-mails reçus en échéances, documents, signalements et communications structurées.</p>
+          </div>
+        </section>
+
+        <section className="v2-panel">
+          <div className="v2-panel-head"><div><span>ACTIVITÉ</span><h3>Activité récente</h3></div><Activity /></div>
+          <div className="v2-activity-list">
+            {data.activity.slice(0, 5).map(item => (
+              <div key={item.id}><span /><p><strong>{item.summary}</strong><small>{item.buildingName || 'CoproLink'} · {new Date(item.createdAt).toLocaleString('fr-BE', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}</small></p></div>
+            ))}
+            {data.activity.length === 0 && <p>Aucune activité récente.</p>}
+          </div>
+        </section>
+      </div>
+    </>
+  )
+}
+
+function BuildingsView({ buildings, goBuilding }) {
+  return <section className="v2-panel v2-portfolio-panel"><div className="v2-panel-head"><div><span>COPROPRIÉTÉS</span><h3>Tous les immeubles</h3></div><small>{buildings.length}</small></div><div className="v2-portfolio-table"><div className="head"><span>Copropriété</span><span>Statut</span><span>Signalements</span><span>Prochaine date</span><span /></div>{buildings.map(building => <button key={building.id} onClick={() => goBuilding(building.slug)}><span><strong>{building.name}</strong><small>{building.address}</small></span><span><i className={statusClass(building.status)}>{statusLabel(building.status)}</i></span><span className={building.openTickets ? 'v2-count-alert' : ''}>{building.openTickets}</span><span>{building.nextEvent ? relativeDate(building.nextEvent.eventDate) : '—'}</span><ChevronRight /></button>)}</div></section>
+}
+
+function TicketsView({ tickets, goBuilding }) {
+  return <section className="v2-panel"><div className="v2-panel-head"><div><span>SIGNALEMENTS</span><h3>Tous les signalements</h3></div><small>{tickets.length}</small></div><div className="v2-priority-list">{tickets.length ? tickets.map(item => <button key={item.id} onClick={() => goBuilding(item.buildingSlug)}><span className="v2-round-icon"><Wrench /></span><div><strong>{item.title}</strong><small>{item.buildingName} · {item.reference}{item.location ? ` · ${item.location}` : ''}</small></div><em className={item.status === 'new' ? 'urgent' : item.status === 'waiting' ? 'wait' : ''}>{ticketLabel(item.status)}</em><ChevronRight /></button>) : <div className="v2-empty"><CheckCircle2 /><strong>Aucun signalement</strong><span>Les demandes de vos copropriétés apparaîtront ici.</span></div>}</div></section>
+}
+
+function DocumentsView({ documents, goBuilding }) {
+  return <section className="v2-panel"><div className="v2-panel-head"><div><span>DOCUMENTS</span><h3>Bibliothèque des copropriétés</h3></div><small>{documents.length}</small></div><div className="v2-simple-list">{documents.length ? documents.map(item => <button key={item.id} onClick={() => goBuilding(item.buildingSlug)}><FileText /><div><strong>{item.name}</strong><small>{item.buildingName} · {item.fileType} · {item.access === 'public' ? 'Public' : 'Privé'}</small></div><span>{dateLabel(item.updatedOn)}</span><ChevronRight /></button>) : <p>Aucun document référencé.</p>}</div></section>
+}
+
+function DeadlinesView({ events, goBuilding }) {
+  return <section className="v2-panel"><div className="v2-panel-head"><div><span>ÉCHÉANCES</span><h3>Agenda consolidé</h3></div><small>{events.length}</small></div><div className="v2-simple-list">{events.length ? events.map(item => <button key={item.id} onClick={() => goBuilding(item.buildingSlug)}><CalendarDays /><div><strong>{item.title}</strong><small>{item.buildingName}{item.detail ? ` · ${item.detail}` : ''}</small></div><span>{dateLabel(item.eventDate)}{item.eventTime ? ` · ${item.eventTime}` : ''}</span><ChevronRight /></button>) : <p>Aucune échéance à venir.</p>}</div></section>
+}
+
+function titleForView(view) {
+  return { buildings: 'Copropriétés', tickets: 'Signalements', documents: 'Documents', deadlines: 'Échéances' }[view] || 'Tableau de bord'
+}
+function subtitleForView(view) {
+  return {
+    dashboard: 'Voici ce qui mérite votre attention aujourd’hui.',
+    buildings: 'Retrouvez et ouvrez rapidement chaque copropriété.',
+    tickets: 'Suivez l’ensemble des demandes et interventions.',
+    documents: 'Retrouvez les documents référencés pour vos immeubles.',
+    deadlines: 'Toutes les prochaines dates dans une seule vue.',
+  }[view] || ''
+}
+function searchPlaceholder(view) {
+  return {
+    dashboard: 'Rechercher une copropriété…', buildings: 'Rechercher une copropriété…',
+    tickets: 'Rechercher un signalement…', documents: 'Rechercher un document…', deadlines: 'Rechercher une échéance…',
+  }[view] || 'Rechercher…'
 }
 
 function BotPreview() {
