@@ -1,17 +1,19 @@
 import React, { useEffect, useState } from 'react'
 import {
   Activity, AlertTriangle, Bell, Building2, CalendarDays, CheckCircle2, ChevronRight,
-  Eye, FileText, HelpCircle, LayoutDashboard, LogOut, Mail, Search, Settings, Sparkles, Wrench,
+  Database, Eye, FileText, HelpCircle, LayoutDashboard, LogOut, Mail, Search, Settings, Sparkles, Wrench,
 } from 'lucide-react'
 import { api } from './api.js'
 import { Logo, Spinner, ErrorPanel } from './views.jsx'
 import InboxAIView from './inbox-ai.jsx'
 import BuildingManagementView from './building-management.jsx'
 import PreviewAsView from './preview-as.jsx'
+import BuildingModelV3View from './building-model-v3.jsx'
 
 const goBuilding = slug => { location.hash = `/portfolio?view=building&building=${encodeURIComponent(slug)}` }
 const goInbox = slug => { location.hash = `/portfolio?view=inbox${slug ? `&building=${encodeURIComponent(slug)}` : ''}` }
 const goPreview = slug => { location.hash = `/portfolio?view=preview&building=${encodeURIComponent(slug)}&as=owner` }
+const goModelV3 = slug => { location.hash = `/portfolio?view=model-v3&building=${encodeURIComponent(slug)}` }
 
 const statusLabel = status => ({ ok: 'Sous contrôle', watch: 'À surveiller', action: 'Action requise' }[status] || 'Sous contrôle')
 const statusClass = status => ({ ok: 'v2-status-ok', watch: 'v2-status-watch', action: 'v2-status-action' }[status] || 'v2-status-ok')
@@ -35,6 +37,7 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
   const inboxMode = view === 'inbox'
   const buildingMode = view === 'building'
   const previewMode = view === 'preview'
+  const modelV3Mode = view === 'model-v3'
 
   const load = async () => {
     setState(s => ({ ...s, status: s.data ? 'refreshing' : 'loading', error: null }))
@@ -46,11 +49,12 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
     }
   }
 
-  useEffect(() => { if (!inboxMode && !buildingMode && !previewMode) load() }, [inboxMode, buildingMode, previewMode])
+  useEffect(() => { if (!inboxMode && !buildingMode && !previewMode && !modelV3Mode) load() }, [inboxMode, buildingMode, previewMode, modelV3Mode])
 
   if (inboxMode) return <InboxAIView session={session} onLogout={onLogout} />
   if (buildingMode) return <BuildingManagementView session={session} buildingSlug={buildingSlug} onLogout={onLogout} />
   if (previewMode) return <PreviewAsView session={session} buildingSlug={buildingSlug} initialRole={previewRole} onLogout={onLogout} setToast={setToast} />
+  if (modelV3Mode) return <BuildingModelV3View buildingSlug={buildingSlug} setToast={setToast} onBack={() => goBuilding(buildingSlug)} />
   if (state.status === 'loading') return <Spinner label="Chargement de votre portefeuille…" />
   if (state.status === 'error') return <ErrorPanel title="Portefeuille indisponible" message={state.error} onRetry={load} />
 
@@ -69,6 +73,7 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
           <button className="active"><LayoutDashboard /> Tableau de bord</button>
           <button onClick={() => data.buildings[0] && goBuilding(data.buildings[0].slug)}><Building2 /> Copropriétés</button>
           <button onClick={() => data.buildings[0] && goPreview(data.buildings[0].slug)}><Eye /> Prévisualiser</button>
+          <button onClick={() => data.buildings[0] && goModelV3(data.buildings[0].slug)}><Database /> Modèle V3</button>
           <button><Wrench /> Signalements</button>
           <button><FileText /> Documents</button>
           <button><CalendarDays /> Échéances</button>
