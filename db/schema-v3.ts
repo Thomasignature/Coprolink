@@ -1,7 +1,7 @@
 import {
   pgTable, serial, text, integer, boolean, timestamp, date, index, uniqueIndex,
 } from "drizzle-orm/pg-core";
-import { buildings, users } from "./schema.js";
+import { buildings, users, events } from "./schema.js";
 
 export const RELATION_TYPES = ["owner", "occupant", "tenant"] as const;
 export type RelationType = (typeof RELATION_TYPES)[number];
@@ -85,8 +85,8 @@ export const personVisibilityPreferences = pgTable("person_visibility_preference
 
 /**
  * E-mails entrants reçus par l'adresse Resend de l'immeuble.
- * Phase 1 : conservation et consultation uniquement. Aucune action métier n'est
- * exécutée automatiquement à partir du contenu d'un e-mail.
+ * Les actions métier proposées par CoproLink restent soumises à validation
+ * humaine. Leur résultat est persisté pour éviter toute double exécution.
  */
 export const inboundEmails = pgTable("inbound_emails", {
   id: serial().primaryKey(),
@@ -103,6 +103,9 @@ export const inboundEmails = pgTable("inbound_emails", {
   attachmentsJson: text("attachments_json").notNull().default("[]"),
   rawEventJson: text("raw_event_json").notNull().default("{}"),
   processingStatus: text("processing_status").notNull().default("received"),
+  calendarActionStatus: text("calendar_action_status").notNull().default("pending"),
+  calendarEventId: integer("calendar_event_id").references(() => events.id, { onDelete: "set null" }),
+  calendarActionedAt: timestamp("calendar_actioned_at"),
   receivedAt: timestamp("received_at").notNull().defaultNow(),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
