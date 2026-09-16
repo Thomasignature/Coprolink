@@ -23,4 +23,5 @@ export const apiV3 = {
   accessStates: slug => request(`/api/person-access${q(slug)}`),
   invitePerson: (slug, personId) => request(`/api/person-access${q(slug)}`, { method: 'POST', body: { personId } }),
   inboundEmails: slug => request(`/api/inbound-email${q(slug)}`),
+  executeInboundAction: (slug, data) => request(`/api/inbound-email${q(slug)}`, { method: 'PATCH', body: data }),
 }
