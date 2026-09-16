@@ -82,3 +82,30 @@ export const personVisibilityPreferences = pgTable("person_visibility_preference
   showPhone: boolean("show_phone").notNull().default(false),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
+
+/**
+ * E-mails entrants reçus par l'adresse Resend de l'immeuble.
+ * Phase 1 : conservation et consultation uniquement. Aucune action métier n'est
+ * exécutée automatiquement à partir du contenu d'un e-mail.
+ */
+export const inboundEmails = pgTable("inbound_emails", {
+  id: serial().primaryKey(),
+  buildingId: integer("building_id").notNull().references(() => buildings.id, { onDelete: "cascade" }),
+  provider: text().notNull().default("resend"),
+  providerEmailId: text("provider_email_id").notNull(),
+  messageId: text("message_id").notNull().default(""),
+  fromAddress: text("from_address").notNull().default(""),
+  fromName: text("from_name").notNull().default(""),
+  toAddress: text("to_address").notNull().default(""),
+  subject: text().notNull().default(""),
+  textBody: text("text_body").notNull().default(""),
+  htmlBody: text("html_body").notNull().default(""),
+  attachmentsJson: text("attachments_json").notNull().default("[]"),
+  rawEventJson: text("raw_event_json").notNull().default("{}"),
+  processingStatus: text("processing_status").notNull().default("received"),
+  receivedAt: timestamp("received_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("inbound_emails_provider_email_idx").on(t.provider, t.providerEmailId),
+  index("inbound_emails_building_received_idx").on(t.buildingId, t.receivedAt),
+]);
