@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import {
   ArrowLeft, Bot, Building2, CalendarDays, CheckCircle2, FileText, FolderCheck,
-  HelpCircle, Inbox, LayoutDashboard, LogOut, Mail, RefreshCw, Search, Settings,
-  ShieldCheck, Sparkles, TicketCheck,
+  HelpCircle, Inbox, LayoutDashboard, LogOut, Mail, MessageSquareText, RefreshCw,
+  Search, Settings, ShieldCheck, Sparkles, TicketCheck,
 } from 'lucide-react'
 import { Logo } from './views.jsx'
 import { apiV3 } from './api-v3.js'
@@ -109,7 +109,7 @@ export default function InboxAIView({ session, onLogout }) {
   const [state, setState] = useState({ status: 'loading', emails: [], error: '' })
   const [selectedId, setSelectedId] = useState(null)
   const [query, setQuery] = useState('')
-  const [actionState, setActionState] = useState({ emailId: null, error: '' })
+  const [actionState, setActionState] = useState({ key: '', error: '' })
 
   const building = eligibleBuildings.find(item => item.buildingSlug === buildingSlug) || eligibleBuildings[0]
 
@@ -142,33 +142,26 @@ export default function InboxAIView({ session, onLogout }) {
     attachments: emails.reduce((sum, item) => sum + item.analysis.files.length, 0),
   }), [emails])
 
-  const createCalendarEvent = async mail => {
-    if (!mail?.analysis?.eventDate || actionState.emailId) return
-    setActionState({ emailId: mail.id, error: '' })
+  const runAction = async (mail, key, data) => {
+    if (!mail || actionState.key) return
+    setActionState({ key: `${mail.id}:${key}`, error: '' })
     try {
-      await apiV3.executeInboundAction(buildingSlug, {
-        emailId: mail.id,
-        action: 'create_calendar_event',
-        title: mail.subject || mail.analysis.classification.label,
-        detail: mail.analysis.summary,
-        eventDate: mail.analysis.eventDate,
-        eventTime: mail.analysis.times.start || '',
-      })
+      await apiV3.executeInboundAction(buildingSlug, { emailId: mail.id, action: key, ...data })
       await load()
-      setActionState({ emailId: null, error: '' })
+      setActionState({ key: '', error: '' })
     } catch (error) {
-      setActionState({ emailId: null, error: error.message || 'Impossible de créer l’événement.' })
+      setActionState({ key: '', error: error.message || 'Impossible d’exécuter cette action.' })
     }
   }
+
+  const busy = (mail, key) => actionState.key === `${mail.id}:${key}`
 
   const changeBuilding = slug => {
     setBuildingSlug(slug)
     location.hash = `/portfolio?view=inbox&building=${encodeURIComponent(slug)}`
   }
 
-  if (!building) {
-    return <main className="ai-no-access"><ShieldCheck /><h1>Inbox indisponible</h1><p>Aucun immeuble administrable n’est associé à ce compte.</p></main>
-  }
+  if (!building) return <main className="ai-no-access"><ShieldCheck /><h1>Inbox indisponible</h1><p>Aucun immeuble administrable n’est associé à ce compte.</p></main>
 
   return (
     <main className="v2-shell ai-shell">
@@ -182,8 +175,7 @@ export default function InboxAIView({ session, onLogout }) {
           <button onClick={() => { location.hash = '/portfolio?view=documents' }}><FileText /> Documents</button>
         </nav>
         <div className="v2-sidebar-bottom">
-          <button><HelpCircle /> Aide & support</button>
-          <button><Settings /> Paramètres</button>
+          <button><HelpCircle /> Aide & support</button><button><Settings /> Paramètres</button>
           <div className="v2-user-card"><span>{(session.user.fullName || session.user.email).slice(0, 2).toUpperCase()}</span><div><strong>{session.user.fullName || session.user.email}</strong><small>Inbox de test réelle</small></div></div>
           <button onClick={onLogout}><LogOut /> Se déconnecter</button>
         </div>
@@ -191,60 +183,34 @@ export default function InboxAIView({ session, onLogout }) {
 
       <section className="v2-main ai-main">
         <header className="ai-topbar">
-          <div className="ai-title-row">
-            <button className="ai-back" onClick={() => { location.hash = '/portfolio' }} aria-label="Retour"><ArrowLeft /></button>
-            <div><span className="ai-kicker">COPROLINK INTELLIGENCE</span><h1>Inbox intelligente</h1><p>Les vrais e-mails reçus par l’adresse de la copropriété apparaissent ici.</p></div>
-          </div>
-          <div className="ai-top-actions">
-            <span className="ai-sandbox-badge"><ShieldCheck /> Deploy Preview</span>
-            <button className="ai-mini-launch" onClick={load}><RefreshCw /> Actualiser</button>
-            <select value={buildingSlug} onChange={event => changeBuilding(event.target.value)}>{eligibleBuildings.map(item => <option key={item.buildingSlug} value={item.buildingSlug}>{item.buildingName}</option>)}</select>
-          </div>
+          <div className="ai-title-row"><button className="ai-back" onClick={() => { location.hash = '/portfolio' }} aria-label="Retour"><ArrowLeft /></button><div><span className="ai-kicker">COPROLINK INTELLIGENCE</span><h1>Inbox intelligente</h1><p>Les vrais e-mails reçus par l’adresse de la copropriété apparaissent ici.</p></div></div>
+          <div className="ai-top-actions"><span className="ai-sandbox-badge"><ShieldCheck /> Deploy Preview</span><button className="ai-mini-launch" onClick={load}><RefreshCw /> Actualiser</button><select value={buildingSlug} onChange={event => changeBuilding(event.target.value)}>{eligibleBuildings.map(item => <option key={item.buildingSlug} value={item.buildingSlug}>{item.buildingName}</option>)}</select></div>
         </header>
 
-        <section className="ai-safety-note"><Bot /><div><strong>Réception réelle, actions sur validation</strong><span>Le mail est réellement reçu et stocké. CoproLink propose les actions détectées ; rien n’est exécuté sans ton clic de validation.</span></div></section>
-
-        <section className="ai-stats">
-          <article><Mail /><div><strong>{totals.emails}</strong><span>mails réellement reçus</span></div></article>
-          <article><CheckCircle2 /><div><strong>{totals.ready}</strong><span>contenus récupérés</span></div></article>
-          <article><CalendarDays /><div><strong>{totals.dates}</strong><span>dates détectées</span></div></article>
-          <article><FolderCheck /><div><strong>{totals.attachments}</strong><span>pièces jointes détectées</span></div></article>
-        </section>
+        <section className="ai-safety-note"><Bot /><div><strong>Réception réelle, actions sur validation</strong><span>CoproLink comprend le mail et propose des actions. Calendrier, documents, tickets et communications ne sont modifiés qu’après validation humaine.</span></div></section>
+        <section className="ai-stats"><article><Mail /><div><strong>{totals.emails}</strong><span>mails réellement reçus</span></div></article><article><CheckCircle2 /><div><strong>{totals.ready}</strong><span>contenus récupérés</span></div></article><article><CalendarDays /><div><strong>{totals.dates}</strong><span>dates détectées</span></div></article><article><FolderCheck /><div><strong>{totals.attachments}</strong><span>pièces jointes détectées</span></div></article></section>
 
         <section className="ai-workspace">
-          <div className="ai-left-column">
-            <section className="ai-card ai-history-card">
-              <div className="ai-card-head ai-history-head"><div><span>INBOX RÉELLE</span><h2>{building.buildingName}</h2></div><div className="ai-history-tools"><label><Search /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Rechercher…" /></label></div></div>
-              {state.status === 'loading' && <div className="ai-empty"><RefreshCw /><strong>Chargement des e-mails…</strong></div>}
-              {state.status === 'error' && <div className="ai-empty"><ShieldCheck /><strong>Inbox indisponible</strong><span>{state.error}</span><button className="ai-mini-launch" onClick={load}>Réessayer</button></div>}
-              {state.status !== 'loading' && state.status !== 'error' && <div className="ai-message-list">
-                {filtered.map(mail => <button key={mail.id} className={mail.id === selected?.id ? 'selected' : ''} onClick={() => { setSelectedId(mail.id); setActionState({ emailId: null, error: '' }) }}>
-                  <span className="ai-avatar">{(mail.fromName || mail.fromAddress || '?').slice(0, 1).toUpperCase()}</span>
-                  <span className="ai-message-copy"><strong>{mail.subject || '(Sans objet)'}</strong><small>{mail.fromName || mail.fromAddress} · {mail.analysis.classification.label}</small></span>
-                  <span className="ai-confidence">{mail.analysis.confidence}%</span>
-                  <em>{mail.calendarEventId ? 'agenda créé' : mail.processingStatus === 'content_ready' ? 'contenu lu' : 'en attente'}</em>
-                </button>)}
-                {filtered.length === 0 && <div className="ai-empty"><Inbox /><strong>Aucun e-mail reçu</strong><span>Envoie un nouveau message à l’adresse Resend de cet immeuble puis clique sur Actualiser.</span></div>}
-              </div>}
-            </section>
-          </div>
+          <div className="ai-left-column"><section className="ai-card ai-history-card"><div className="ai-card-head ai-history-head"><div><span>INBOX RÉELLE</span><h2>{building.buildingName}</h2></div><div className="ai-history-tools"><label><Search /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Rechercher…" /></label></div></div>
+            {state.status === 'loading' && <div className="ai-empty"><RefreshCw /><strong>Chargement des e-mails…</strong></div>}
+            {state.status === 'error' && <div className="ai-empty"><ShieldCheck /><strong>Inbox indisponible</strong><span>{state.error}</span><button className="ai-mini-launch" onClick={load}>Réessayer</button></div>}
+            {state.status !== 'loading' && state.status !== 'error' && <div className="ai-message-list">{filtered.map(mail => <button key={mail.id} className={mail.id === selected?.id ? 'selected' : ''} onClick={() => { setSelectedId(mail.id); setActionState({ key: '', error: '' }) }}><span className="ai-avatar">{(mail.fromName || mail.fromAddress || '?').slice(0, 1).toUpperCase()}</span><span className="ai-message-copy"><strong>{mail.subject || '(Sans objet)'}</strong><small>{mail.fromName || mail.fromAddress} · {mail.analysis.classification.label}</small></span><span className="ai-confidence">{mail.analysis.confidence}%</span><em>{mail.processingStatus === 'content_ready' ? 'contenu lu' : 'en attente'}</em></button>)}{filtered.length === 0 && <div className="ai-empty"><Inbox /><strong>Aucun e-mail reçu</strong><span>Envoie un message à l’adresse de cet immeuble puis clique sur Actualiser.</span></div>}</div>}
+          </section></div>
 
-          <div className="ai-right-column">
-            <section className="ai-card ai-result-card">
-              <div className="ai-card-head"><div><span>INTERPRÉTATION</span><h2>{selected ? 'CoproLink a lu ce mail' : 'En attente d’un e-mail'}</h2></div>{selected && <span className="ai-confidence-large">{selected.analysis.confidence}%</span>}</div>
-              {selected ? <>
-                <div className="ai-analysis-summary"><div className="ai-analysis-icon"><Bot /></div><div><span className="ai-type-chip">{selected.analysis.classification.label}</span><h3>{selected.analysis.summary}</h3><p>{selected.fromName || selected.fromAddress}{selected.analysis.eventDate ? ` · ${formatDate(selected.analysis.eventDate)}` : ''}{selected.analysis.ticketRef ? ` · ${selected.analysis.ticketRef}` : ''}</p></div></div>
-                <div className="ai-actions-title"><strong>Actions proposées par CoproLink</strong><span>Validation humaine obligatoire.</span></div>
-                <div className="ai-action-list">
-                  {selected.analysis.eventDate && <article className={`ai-action ${selected.calendarEventId ? 'executed' : 'review'}`}><span className="ai-action-icon"><CalendarDays /></span><div><strong>Ajouter cette intervention au calendrier</strong><p>{formatDate(selected.analysis.eventDate)}{selected.analysis.times.start ? ` · ${selected.analysis.times.start}${selected.analysis.times.end ? `–${selected.analysis.times.end}` : ''}` : ' · heure non précisée'}</p><small>{selected.subject || selected.analysis.summary}</small></div><span className={`ai-action-status ${selected.calendarEventId ? 'executed' : 'review'}`}>{selected.calendarEventId ? 'Ajouté' : 'À valider'}</span>{!selected.calendarEventId && <div className="ai-action-buttons"><button className="approve" disabled={actionState.emailId === selected.id} onClick={() => createCalendarEvent(selected)}><CheckCircle2 /> {actionState.emailId === selected.id ? 'Ajout en cours…' : 'Valider et ajouter'}</button></div>}</article>}
-                  {selected.analysis.ticketRef && <article className="ai-action"><span className="ai-action-icon"><TicketCheck /></span><div><strong>Signalement reconnu</strong><p>{selected.analysis.ticketRef}</p></div><span className="ai-action-status">Détecté</span></article>}
-                  {selected.analysis.files.map((name, index) => <article className="ai-action" key={`${name}-${index}`}><span className="ai-action-icon"><FileText /></span><div><strong>{name}</strong><p>Classement proposé : {folderFor(`${selected.subject}\n${selected.analysis.body}`)}</p></div><span className="ai-action-status">Pièce jointe</span></article>)}
-                </div>
-                {actionState.error && <p style={{color:'#9a4f48',fontSize:'10px',margin:'10px 2px'}}>{actionState.error}</p>}
-                <div className="ai-output-section"><div className="ai-output-heading"><Mail /><strong>Contenu reçu</strong><span>{selected.processingStatus === 'content_ready' ? 'OK' : '…'}</span></div><p className="ai-mini-empty" style={{fontSize:'10px',lineHeight:'1.6',whiteSpace:'pre-wrap'}}>{selected.analysis.body || 'Le corps du mail n’a pas encore pu être récupéré depuis Resend.'}</p></div>
-              </> : <div className="ai-result-empty"><Sparkles /><p>Envoie un mail à l’adresse de la copropriété pour le voir apparaître ici.</p></div>}
-            </section>
-          </div>
+          <div className="ai-right-column"><section className="ai-card ai-result-card"><div className="ai-card-head"><div><span>INTERPRÉTATION</span><h2>{selected ? 'CoproLink a lu ce mail' : 'En attente d’un e-mail'}</h2></div>{selected && <span className="ai-confidence-large">{selected.analysis.confidence}%</span>}</div>
+            {selected ? <><div className="ai-analysis-summary"><div className="ai-analysis-icon"><Bot /></div><div><span className="ai-type-chip">{selected.analysis.classification.label}</span><h3>{selected.analysis.summary}</h3><p>{selected.fromName || selected.fromAddress}{selected.analysis.eventDate ? ` · ${formatDate(selected.analysis.eventDate)}` : ''}{selected.analysis.ticketRef ? ` · ${selected.analysis.ticketRef}` : ''}</p></div></div>
+            <div className="ai-actions-title"><strong>Actions proposées par CoproLink</strong><span>Validation humaine obligatoire.</span></div><div className="ai-action-list">
+              {selected.analysis.eventDate && <article className={`ai-action ${selected.calendarEventId ? 'executed' : 'review'}`}><span className="ai-action-icon"><CalendarDays /></span><div><strong>Ajouter cette intervention au calendrier</strong><p>{formatDate(selected.analysis.eventDate)}{selected.analysis.times.start ? ` · ${selected.analysis.times.start}${selected.analysis.times.end ? `–${selected.analysis.times.end}` : ''}` : ' · heure non précisée'}</p></div><span className={`ai-action-status ${selected.calendarEventId ? 'executed' : 'review'}`}>{selected.calendarEventId ? 'Ajouté' : 'À valider'}</span>{!selected.calendarEventId && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'create_calendar_event')} onClick={() => runAction(selected, 'create_calendar_event', { title: selected.subject || selected.analysis.classification.label, detail: selected.analysis.summary, eventDate: selected.analysis.eventDate, eventTime: selected.analysis.times.start || '' })}><CheckCircle2 /> {busy(selected, 'create_calendar_event') ? 'Ajout…' : 'Valider et ajouter'}</button></div>}</article>}
+
+              {selected.analysis.files.length > 0 && <article className={`ai-action ${selected.documentIds?.length ? 'executed' : 'review'}`}><span className="ai-action-icon"><FolderCheck /></span><div><strong>Classer {selected.analysis.files.length} pièce(s) jointe(s)</strong><p>{selected.analysis.files.join(', ')} → {folderFor(`${selected.subject}\n${selected.analysis.body}`)}</p><small>Le fichier binaire n’est pas encore archivé dans CoproLink ; ses métadonnées le seront.</small></div><span className={`ai-action-status ${selected.documentIds?.length ? 'executed' : 'review'}`}>{selected.documentIds?.length ? 'Classé' : 'À valider'}</span>{!selected.documentIds?.length && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'classify_documents')} onClick={() => runAction(selected, 'classify_documents', { files: selected.analysis.files, folder: folderFor(`${selected.subject}\n${selected.analysis.body}`) })}><FolderCheck /> {busy(selected, 'classify_documents') ? 'Classement…' : 'Classer dans Documents'}</button></div>}</article>}
+
+              {selected.analysis.ticketRef && <article className={`ai-action ${selected.ticketActionStatus === 'created' ? 'executed' : 'review'}`}><span className="ai-action-icon"><TicketCheck /></span><div><strong>Mettre à jour {selected.analysis.ticketRef}</strong><p>{selected.analysis.summary}</p></div><span className={`ai-action-status ${selected.ticketActionStatus === 'created' ? 'executed' : 'review'}`}>{selected.ticketActionStatus === 'created' ? 'Mis à jour' : 'À valider'}</span>{selected.ticketActionStatus !== 'created' && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'update_ticket')} onClick={() => runAction(selected, 'update_ticket', { reference: selected.analysis.ticketRef, note: selected.analysis.body.slice(0, 1000) })}><TicketCheck /> {busy(selected, 'update_ticket') ? 'Mise à jour…' : 'Valider la mise à jour'}</button></div>}</article>}
+
+              {['intervention', 'meeting', 'information'].includes(selected.analysis.classification.key) && <article className={`ai-action ${selected.announcementId ? 'executed' : 'review'}`}><span className="ai-action-icon"><MessageSquareText /></span><div><strong>Publier une information aux copropriétaires</strong><p>{selected.analysis.summary}</p><small>Publication dans l’app uniquement par défaut.</small></div><span className={`ai-action-status ${selected.announcementId ? 'executed' : 'review'}`}>{selected.announcementId ? 'Publiée' : 'À valider'}</span>{!selected.announcementId && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'publish_announcement')} onClick={() => runAction(selected, 'publish_announcement', { title: selected.subject || 'Information', body: selected.analysis.summary, priority: selected.analysis.classification.key === 'intervention' ? 'important' : 'normal', isPublic: false })}><MessageSquareText /> {busy(selected, 'publish_announcement') ? 'Publication…' : 'Valider et publier'}</button></div>}</article>}
+            </div>
+            {actionState.error && <p style={{color:'#9a4f48',fontSize:'10px',margin:'10px 2px'}}>{actionState.error}</p>}
+            <div className="ai-output-section"><div className="ai-output-heading"><Mail /><strong>Contenu reçu</strong><span>{selected.processingStatus === 'content_ready' ? 'OK' : '…'}</span></div><p className="ai-mini-empty" style={{fontSize:'10px',lineHeight:'1.6',whiteSpace:'pre-wrap'}}>{selected.analysis.body || 'Le corps du mail n’a pas encore pu être récupéré depuis Resend.'}</p></div></> : <div className="ai-result-empty"><Sparkles /><p>Envoie un mail à l’adresse de la copropriété pour le voir apparaître ici.</p></div>}
+          </section></div>
         </section>
       </section>
     </main>
