@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import {
   Activity, AlertTriangle, Bell, Building2, CalendarDays, CheckCircle2, ChevronRight,
-  Database, Eye, FileText, HelpCircle, LayoutDashboard, LogOut, Mail, Search, Settings, Sparkles, Wrench,
+  FileText, HelpCircle, LayoutDashboard, LogOut, Mail, Search, Settings, Sparkles, Wrench,
 } from 'lucide-react'
 import { api } from './api.js'
 import { Logo, Spinner, ErrorPanel } from './views.jsx'
@@ -12,8 +12,6 @@ import BuildingModelV3View from './building-model-v3.jsx'
 
 const goBuilding = slug => { location.hash = `/portfolio?view=building&building=${encodeURIComponent(slug)}` }
 const goInbox = slug => { location.hash = `/portfolio?view=inbox${slug ? `&building=${encodeURIComponent(slug)}` : ''}` }
-const goPreview = slug => { location.hash = `/portfolio?view=preview&building=${encodeURIComponent(slug)}&as=owner` }
-const goModelV3 = slug => { location.hash = `/portfolio?view=model-v3&building=${encodeURIComponent(slug)}` }
 
 const statusLabel = status => ({ ok: 'Sous contrôle', watch: 'À surveiller', action: 'Action requise' }[status] || 'Sous contrôle')
 const statusClass = status => ({ ok: 'v2-status-ok', watch: 'v2-status-watch', action: 'v2-status-action' }[status] || 'v2-status-ok')
@@ -54,9 +52,10 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
   if (inboxMode) return <InboxAIView session={session} onLogout={onLogout} />
   if (buildingMode) return <BuildingManagementView session={session} buildingSlug={buildingSlug} onLogout={onLogout} />
   if (previewMode) return <PreviewAsView session={session} buildingSlug={buildingSlug} initialRole={previewRole} onLogout={onLogout} setToast={setToast} />
+  // Route de diagnostic conservée pour la validation, mais non exposée dans la navigation utilisateur.
   if (modelV3Mode) return <BuildingModelV3View buildingSlug={buildingSlug} setToast={setToast} onBack={() => goBuilding(buildingSlug)} />
-  if (state.status === 'loading') return <Spinner label="Chargement de votre portefeuille…" />
-  if (state.status === 'error') return <ErrorPanel title="Portefeuille indisponible" message={state.error} onRetry={load} />
+  if (state.status === 'loading') return <Spinner label="Chargement de votre espace…" />
+  if (state.status === 'error') return <ErrorPanel title="Espace indisponible" message={state.error} onRetry={load} />
 
   const data = state.data
   const firstName = (session.user.fullName || session.user.email).split(' ')[0]
@@ -72,19 +71,16 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
         <nav>
           <button className="active"><LayoutDashboard /> Tableau de bord</button>
           <button onClick={() => data.buildings[0] && goBuilding(data.buildings[0].slug)}><Building2 /> Copropriétés</button>
-          <button onClick={() => data.buildings[0] && goPreview(data.buildings[0].slug)}><Eye /> Prévisualiser</button>
-          <button onClick={() => data.buildings[0] && goModelV3(data.buildings[0].slug)}><Database /> Modèle V3</button>
           <button><Wrench /> Signalements</button>
           <button><FileText /> Documents</button>
           <button><CalendarDays /> Échéances</button>
-          <button onClick={() => goInbox()}><Sparkles /> Inbox IA <b>BETA</b></button>
         </nav>
         <div className="v2-sidebar-bottom">
           <button><HelpCircle /> Aide & support</button>
           <button><Settings /> Paramètres</button>
           <div className="v2-user-card">
-            <span>{(session.user.fullName || 'SY').split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase()}</span>
-            <div><strong>{session.user.fullName || session.user.email}</strong><small>Gestion des copropriétés</small></div>
+            <span>{(session.user.fullName || 'CL').split(' ').map(p => p[0]).join('').slice(0, 2).toUpperCase()}</span>
+            <div><strong>{session.user.fullName || session.user.email}</strong><small>Administration CoproLink</small></div>
           </div>
           <button onClick={onLogout}><LogOut /> Se déconnecter</button>
         </div>
@@ -94,7 +90,7 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
         <header className="v2-manager-topbar">
           <div>
             <h1>Bonjour {firstName} 👋</h1>
-            <p>Voici la situation de votre portefeuille aujourd’hui.</p>
+            <p>Voici ce qui mérite votre attention aujourd’hui.</p>
           </div>
           <div className="v2-manager-tools">
             <label className="v2-search"><Search /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Rechercher une copropriété…" /></label>
@@ -105,22 +101,22 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
         <section className="v2-manager-hero">
           <div className="v2-manager-hero-copy">
             <CheckCircle2 />
-            <div><h2>Votre portefeuille est sous contrôle</h2><p>CoproLink veille sur vos copropriétés et met en avant uniquement ce qui mérite votre attention.</p></div>
+            <div><h2>{data.summary.attention ? `${data.summary.attention} élément${data.summary.attention > 1 ? 's' : ''} à suivre` : 'Tout est sous contrôle'}</h2><p>CoproLink centralise les informations importantes de vos copropriétés et fait remonter les actions utiles.</p></div>
           </div>
           <div className="v2-manager-stats">
             <article><Building2 /><strong>{data.summary.buildings}</strong><span>copropriétés</span></article>
             <article><Bell /><strong>{data.summary.attention}</strong><span>éléments à traiter</span></article>
             <article><CalendarDays /><strong>{data.summary.upcoming}</strong><span>échéances proches</span></article>
-            <article className={data.summary.openTickets ? 'attention' : ''}><AlertTriangle /><strong>{data.summary.openTickets}</strong><span>incidents ouverts</span></article>
+            <article className={data.summary.openTickets ? 'attention' : ''}><AlertTriangle /><strong>{data.summary.openTickets}</strong><span>signalements ouverts</span></article>
           </div>
         </section>
 
         <div className="v2-manager-grid">
           <section className="v2-panel v2-priority-panel">
-            <div className="v2-panel-head"><div><span>PRIORITÉS</span><h3>À traiter aujourd’hui</h3></div><button>Voir tout <ChevronRight /></button></div>
+            <div className="v2-panel-head"><div><span>PRIORITÉS</span><h3>À traiter</h3></div></div>
             <div className="v2-priority-list">
               {data.priority.length === 0
-                ? <div className="v2-empty"><CheckCircle2 /><strong>Aucune priorité urgente</strong><span>Votre portefeuille est à jour.</span></div>
+                ? <div className="v2-empty"><CheckCircle2 /><strong>Aucune priorité urgente</strong><span>Votre espace est à jour.</span></div>
                 : data.priority.slice(0, 5).map(item => (
                   <button key={item.id} onClick={() => goBuilding(item.buildingSlug)}>
                     <span className="v2-round-icon"><Wrench /></span>
@@ -133,9 +129,9 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
           </section>
 
           <section className="v2-panel v2-portfolio-panel">
-            <div className="v2-panel-head"><div><span>PORTEFEUILLE</span><h3>Vue d’ensemble</h3></div><small>{filteredBuildings.length} copropriété{filteredBuildings.length > 1 ? 's' : ''}</small></div>
+            <div className="v2-panel-head"><div><span>COPROPRIÉTÉS</span><h3>Vue d’ensemble</h3></div><small>{filteredBuildings.length} copropriété{filteredBuildings.length > 1 ? 's' : ''}</small></div>
             <div className="v2-portfolio-table">
-              <div className="head"><span>Copropriété</span><span>Statut</span><span>Incidents</span><span>Prochaine date</span><span /></div>
+              <div className="head"><span>Copropriété</span><span>Statut</span><span>Signalements</span><span>Prochaine date</span><span /></div>
               {filteredBuildings.map(building => (
                 <button key={building.id} onClick={() => goBuilding(building.slug)}>
                   <span><strong>{building.name}</strong><small>{building.address}</small></span>
@@ -161,12 +157,11 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
           </section>
 
           <section className="v2-panel">
-            <div className="v2-panel-head"><div><span>INBOX IA</span><h3>Transformer les e-mails en actions</h3></div><Sparkles /></div>
+            <div className="v2-panel-head"><div><span>AUTOMATISATION</span><h3>Inbox intelligente</h3></div><Sparkles /></div>
             <div className="v2-inbox-placeholder ai-ready-card">
               <BotPreview />
-              <strong>Le prototype intelligent est prêt à tester</strong>
-              <p>Collez un e-mail : CoproLink détecte les dates, classe les pièces jointes, rattache les tickets et prépare les communications.</p>
-              <button className="ai-mini-launch" onClick={() => goInbox()}>Ouvrir l’Inbox IA <ChevronRight /></button>
+              <strong>Bientôt disponible</strong>
+              <p>CoproLink pourra transformer les e-mails reçus en échéances, documents, signalements et communications structurées.</p>
             </div>
           </section>
 
