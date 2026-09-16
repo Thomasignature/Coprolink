@@ -1,9 +1,10 @@
 import type { Config } from "@netlify/functions";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { buildings } from "../../db/schema.js";
+import { buildings, events } from "../../db/schema.js";
 import { inboundEmails } from "../../db/schema-v3.js";
 import { authorizeCoproLinkAdmin, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { writeAudit } from "../lib/data.mts";
 
 const normalizeAddress = (value: unknown) => String(value ?? "").trim().toLowerCase();
 const firstAddress = (value: unknown) => Array.isArray(value) ? normalizeAddress(value[0]) : normalizeAddress(value);
@@ -37,12 +38,19 @@ const ensureInboundEmailTable = async () => {
       attachments_json text NOT NULL DEFAULT '[]',
       raw_event_json text NOT NULL DEFAULT '{}',
       processing_status text NOT NULL DEFAULT 'received',
+      calendar_action_status text NOT NULL DEFAULT 'pending',
+      calendar_event_id integer REFERENCES events(id) ON DELETE SET NULL,
+      calendar_actioned_at timestamp,
       received_at timestamp NOT NULL DEFAULT now(),
       created_at timestamp NOT NULL DEFAULT now()
     )
   `);
+  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS calendar_action_status text NOT NULL DEFAULT 'pending'`);
+  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS calendar_event_id integer REFERENCES events(id) ON DELETE SET NULL`);
+  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS calendar_actioned_at timestamp`);
   await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS inbound_emails_provider_email_idx ON inbound_emails(provider, provider_email_id)`);
   await db.execute(sql`CREATE INDEX IF NOT EXISTS inbound_emails_building_received_idx ON inbound_emails(building_id, received_at)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS inbound_emails_calendar_event_idx ON inbound_emails(calendar_event_id)`);
 };
 
 const fetchResendContent = async (emailId: string) => {
@@ -101,6 +109,77 @@ const readInboundList = async (req: Request) => {
       attachments: (() => { try { return JSON.parse(row.attachmentsJson || "[]"); } catch { return []; } })(),
     })),
   }, { headers: { "cache-control": "no-store" } });
+};
+
+const executeInboundAction = async (req: Request) => {
+  await ensureInboundEmailTable();
+  const ctx = await authorizeCoproLinkAdmin(req, readBuildingSlug(req));
+  const body: any = await req.json().catch(() => ({}));
+  const emailId = Number(body.emailId);
+  const action = String(body.action || "");
+
+  if (!Number.isInteger(emailId) || emailId <= 0) {
+    return Response.json({ error: "E-mail entrant invalide" }, { status: 422 });
+  }
+  if (action !== "create_calendar_event") {
+    return Response.json({ error: "Action Inbox inconnue" }, { status: 422 });
+  }
+
+  const [mail] = await db.select().from(inboundEmails)
+    .where(and(eq(inboundEmails.id, emailId), eq(inboundEmails.buildingId, ctx.buildingId)))
+    .limit(1);
+  if (!mail) return Response.json({ error: "E-mail introuvable" }, { status: 404 });
+
+  if (mail.calendarEventId) {
+    return Response.json({ ok: true, duplicate: true, eventId: mail.calendarEventId, status: "created" });
+  }
+
+  const eventDate = String(body.eventDate || "").trim();
+  const eventTime = String(body.eventTime || "").trim();
+  const title = String(body.title || mail.subject || "Événement CoproLink").trim().slice(0, 120);
+  const detail = String(body.detail || "Créé après validation depuis l’Inbox CoproLink.").trim().slice(0, 300);
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) {
+    return Response.json({ error: "Date attendue au format AAAA-MM-JJ" }, { status: 422 });
+  }
+  if (eventTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(eventTime)) {
+    return Response.json({ error: "Heure attendue au format HH:MM" }, { status: 422 });
+  }
+
+  const [created] = await db.insert(events).values({
+    buildingId: ctx.buildingId,
+    title,
+    detail,
+    eventDate,
+    eventTime,
+    isPublic: true,
+  }).returning();
+
+  await db.update(inboundEmails).set({
+    calendarActionStatus: "created",
+    calendarEventId: created.id,
+    calendarActionedAt: new Date(),
+  }).where(eq(inboundEmails.id, mail.id));
+
+  await writeAudit(ctx, {
+    action: "inbound_email.calendar_event_created",
+    entityType: "event",
+    entityId: created.id,
+    summary: `Événement « ${title} » créé depuis l’e-mail « ${mail.subject || "Sans objet"} » pour le ${eventDate}.`,
+  });
+
+  return Response.json({
+    ok: true,
+    status: "created",
+    event: {
+      id: created.id,
+      title: created.title,
+      detail: created.detail,
+      eventDate: created.eventDate,
+      eventTime: created.eventTime,
+      isPublic: created.isPublic,
+    },
+  }, { status: 201 });
 };
 
 const receiveResendWebhook = async (req: Request) => {
@@ -178,7 +257,8 @@ export default async (req: Request) => {
   try {
     if (req.method === "GET") return await readInboundList(req);
     if (req.method === "POST") return await receiveResendWebhook(req);
-    return new Response(null, { status: 405, headers: { Allow: "GET, POST" } });
+    if (req.method === "PATCH") return await executeInboundAction(req);
+    return new Response(null, { status: 405, headers: { Allow: "GET, POST, PATCH" } });
   } catch (error) {
     return jsonError(error);
   }
