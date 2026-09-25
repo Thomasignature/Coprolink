@@ -4,7 +4,7 @@ import './person-access-control.css'
 
 const labelFor = state => ({ active: 'Accès actif', pending: 'Invitation en attente', none: 'Sans accès' }[state] || 'Sans accès')
 
-export default function PersonAccessControl({ person, access = 'none', onSaveEmail, onInvite, compact = false }) {
+export default function PersonAccessControl({ person, access = 'none', onSaveEmail, onInvite, compact = false, readOnly = false }) {
   const [editing, setEditing] = useState(false)
   const [email, setEmail] = useState(person.email || '')
   const [busy, setBusy] = useState(false)
@@ -37,7 +37,9 @@ export default function PersonAccessControl({ person, access = 'none', onSaveEma
   return (
     <div className={`pac ${compact ? 'pac-compact' : ''}`}>
       <span className={`pac-state pac-${access}`}>{labelFor(access)}</span>
-      {editing ? (
+      {readOnly ? (
+        <span className="pac-email pac-muted"><Mail /> {person.email || 'E-mail non renseigné'}</span>
+      ) : editing ? (
         <div className="pac-editor">
           <Mail />
           <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="nom@exemple.be" autoFocus />
