@@ -6,7 +6,7 @@ import {
   personVisibilityPreferences, PROFESSIONAL_TYPES, RELATION_TYPES, unitPersonRelations,
   type ProfessionalType, type RelationType,
 } from "../../db/schema-v3.js";
-import { authorizeCoproLinkAdmin, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { authorizeCoproLinkAdmin, authorizeSyndicOperator, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import { readString, writeAudit } from "../lib/data.mts";
 
 const readId = (value: unknown, field = "id") => {
@@ -86,7 +86,10 @@ const assertPersonInBuilding = async (buildingId: number, personId: number) => {
 
 export default async (req: Request) => {
   try {
-    const ctx = await authorizeCoproLinkAdmin(req, readBuildingSlug(req));
+    const buildingSlug = readBuildingSlug(req);
+    const ctx = req.method === "GET"
+      ? await authorizeCoproLinkAdmin(req, buildingSlug)
+      : await authorizeSyndicOperator(req, buildingSlug);
     const url = new URL(req.url);
 
     if (req.method === "GET") return Response.json(await readModel(ctx.buildingId), { headers: { "cache-control": "no-store" } });
