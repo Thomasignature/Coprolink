@@ -3,7 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { buildingMembers, pendingMembers, users } from "../../db/schema.js";
 import { buildingPeople, unitPersonRelations, buildingUnits } from "../../db/schema-v3.js";
-import { authorizeCoproLinkAdmin, HttpError, jsonError, linkBuildingPersonAccount, readBuildingSlug } from "../lib/auth.mts";
+import { authorizeCoproLinkAdmin, authorizeSyndicOperator, HttpError, jsonError, linkBuildingPersonAccount, readBuildingSlug } from "../lib/auth.mts";
 import {
   IdentityAdminUnavailableError,
   IdentityEmailTakenError,
@@ -34,7 +34,10 @@ const unitForPerson = async (buildingId: number, personId: number) => {
 
 export default async (req: Request) => {
   try {
-    const ctx = await authorizeCoproLinkAdmin(req, readBuildingSlug(req));
+    const buildingSlug = readBuildingSlug(req);
+    const ctx = req.method === "GET"
+      ? await authorizeCoproLinkAdmin(req, buildingSlug)
+      : await authorizeSyndicOperator(req, buildingSlug);
     if (ctx.principal.kind !== "user") throw new HttpError(403, "Compte utilisateur requis");
 
     if (req.method === "GET") {
