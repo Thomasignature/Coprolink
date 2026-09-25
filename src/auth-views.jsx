@@ -181,8 +181,8 @@ export function LoginView({ mode: initialMode = 'login', inviteToken = null, onA
 /**
  * Écran affiché à un compte authentifié qui n'est membre d'aucun immeuble.
  *
- * Deux cas : la plateforme est vierge et cette personne installe le premier
- * immeuble, ou son accès doit encore être accordé par un syndic.
+ * Deux cas : la plateforme est vierge et le syndic installe le premier
+ * immeuble, ou l'accès de la personne doit encore être accordé par un syndic.
  */
 export function SetupView({ onCreated, onLogout, email }) {
   const [name, setName] = useState('')
@@ -219,11 +219,11 @@ export function SetupView({ onCreated, onLogout, email }) {
   return (
     <AuthFrame>
       <form className="auth-form wide" onSubmit={submit}>
-        <span className="overline">Première installation</span>
-        <h2>Créer votre immeuble</h2>
+        <span className="overline">Onboarding syndic</span>
+        <h2>Initialiser une copropriété</h2>
         <p className="muted-p">
-          Vous serez enregistré comme gestionnaire de cet immeuble et pourrez ensuite
-          accorder l'accès aux copropriétaires.
+          Le syndic initialise l’immeuble, renseigne les lots et les personnes puis
+          invite les copropriétaires et occupants. L’espace CoproLink reste attaché à l’immeuble.
         </p>
 
         {error && <div className="form-error" role="alert">{error}</div>}
@@ -245,7 +245,7 @@ export function SetupView({ onCreated, onLogout, email }) {
         </label>
 
         <button className="primary-btn full-btn" disabled={busy}>
-          <Building2 /> {busy ? 'Création…' : "Créer l'immeuble"}
+          <Building2 /> {busy ? 'Création…' : "Initialiser la copropriété"}
         </button>
         <div className="auth-links">
           <span className="subtle">Connecté en tant que {email}</span>
