@@ -5,7 +5,7 @@ import {
   announcements, buildingMembers, buildings, documents, events, tickets, ticketUpdates,
 } from "../../db/schema.js";
 import { buildingProfessionals } from "../../db/schema-v3.js";
-import { HttpError, jsonError, requireUser } from "../lib/auth.mts";
+import { HttpError, jsonError, listMemberships, requireUser } from "../lib/auth.mts";
 import { readString } from "../lib/data.mts";
 
 /**
@@ -33,22 +33,23 @@ export default async (req: Request) => {
   try {
     const principal = await requireUser(req);
 
+    const memberships = await listMemberships(principal.userId);
+    const isSyndicOperator = memberships.some((membership) => membership.role === "manager");
     const expectedSetupToken = Netlify.env.get("COPROLINK_SETUP_TOKEN");
-    if (expectedSetupToken) {
-      const provided = req.headers.get("x-setup-token") ?? "";
-      if (provided !== expectedSetupToken) {
-        throw new HttpError(403, "Jeton d'amorçage invalide");
-      }
-    }
 
     const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(buildings);
     const isFirstBuilding = count === 0;
 
-    if (!isFirstBuilding && !principal.isPlatformAdmin && !expectedSetupToken) {
-      throw new HttpError(
-        403,
-        "Un immeuble existe déjà. Seul un administrateur plateforme peut en créer un autre.",
-      );
+    // Un syndic déjà rattaché à CoproLink peut onboarder d'autres immeubles de
+    // son portefeuille sans jeton technique. Le jeton reste un mécanisme
+    // d'amorçage pour un compte sans portefeuille existant.
+    if (!principal.isPlatformAdmin && !isSyndicOperator) {
+      if (expectedSetupToken) {
+        const provided = req.headers.get("x-setup-token") ?? "";
+        if (provided !== expectedSetupToken) throw new HttpError(403, "Jeton d'amorçage invalide");
+      } else if (!isFirstBuilding) {
+        throw new HttpError(403, "La création d'une copropriété est réservée au syndic.");
+      }
     }
 
     const body = await req.json().catch(() => ({}));
