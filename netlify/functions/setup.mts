@@ -4,7 +4,8 @@ import { db } from "../../db/index.js";
 import {
   announcements, buildingMembers, buildings, documents, events, tickets, ticketUpdates,
 } from "../../db/schema.js";
-import { HttpError, jsonError, requireUser } from "../lib/auth.mts";
+import { buildingProfessionals } from "../../db/schema-v3.js";
+import { HttpError, jsonError, listMemberships, requireUser } from "../lib/auth.mts";
 import { readString } from "../lib/data.mts";
 
 /**
@@ -32,22 +33,23 @@ export default async (req: Request) => {
   try {
     const principal = await requireUser(req);
 
+    const memberships = await listMemberships(principal.userId);
+    const isSyndicOperator = memberships.some((membership) => membership.role === "manager");
     const expectedSetupToken = Netlify.env.get("COPROLINK_SETUP_TOKEN");
-    if (expectedSetupToken) {
-      const provided = req.headers.get("x-setup-token") ?? "";
-      if (provided !== expectedSetupToken) {
-        throw new HttpError(403, "Jeton d'amorçage invalide");
-      }
-    }
 
     const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(buildings);
     const isFirstBuilding = count === 0;
 
-    if (!isFirstBuilding && !principal.isPlatformAdmin && !expectedSetupToken) {
-      throw new HttpError(
-        403,
-        "Un immeuble existe déjà. Seul un administrateur plateforme peut en créer un autre.",
-      );
+    // Un syndic déjà rattaché à CoproLink peut onboarder d'autres immeubles de
+    // son portefeuille sans jeton technique. Le jeton reste un mécanisme
+    // d'amorçage pour un compte sans portefeuille existant.
+    if (!principal.isPlatformAdmin && !isSyndicOperator) {
+      if (expectedSetupToken) {
+        const provided = req.headers.get("x-setup-token") ?? "";
+        if (provided !== expectedSetupToken) throw new HttpError(403, "Jeton d'amorçage invalide");
+      } else if (!isFirstBuilding) {
+        throw new HttpError(403, "La création d'une copropriété est réservée au syndic.");
+      }
     }
 
     const body = await req.json().catch(() => ({}));
@@ -55,6 +57,7 @@ export default async (req: Request) => {
     const address = readString(body.address, "adresse", { max: 200, required: false });
     const lots = Number.isInteger(body.lots) && body.lots > 0 ? Math.min(body.lots, 5000) : 0;
     const withSampleData = body.withSampleData === true;
+    const managerName = readString(body.managerName, "syndic", { max: 120, required: false });
 
     let slug = slugify(name);
     const [clash] = await db.select().from(buildings).where(sql`${buildings.slug} = ${slug}`).limit(1);
@@ -67,7 +70,7 @@ export default async (req: Request) => {
         name,
         address,
         lots,
-        managerName: readString(body.managerName, "syndic", { max: 120, required: false }),
+        managerName,
         emergencyPhone: readString(body.emergencyPhone, "urgence", { max: 40, required: false }),
         healthScore: 0,
       })
@@ -79,6 +82,16 @@ export default async (req: Request) => {
       role: "manager",
       unitLabel: readString(body.unitLabel, "lot", { max: 80, required: false }),
     });
+
+    if (managerName) {
+      await db.insert(buildingProfessionals).values({
+        buildingId: building.id,
+        professionalType: "syndic",
+        organizationName: managerName,
+        contactName: principal.fullName || "",
+        email: principal.email,
+      });
+    }
 
     if (withSampleData) {
       await seedSampleContent(building.id, principal.userId);
