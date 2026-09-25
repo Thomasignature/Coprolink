@@ -191,7 +191,7 @@ export function SetupView({ onCreated, onLogout, email }) {
   const [managerName, setManagerName] = useState('')
   const [emergencyPhone, setEmergencyPhone] = useState('')
   const [setupToken, setSetupToken] = useState('')
-  const [withSampleData, setWithSampleData] = useState(true)
+  const [withSampleData, setWithSampleData] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -241,7 +241,7 @@ export function SetupView({ onCreated, onLogout, email }) {
         </label>
         <label className="checkbox">
           <input type="checkbox" checked={withSampleData} onChange={e => setWithSampleData(e.target.checked)} />
-          Préremplir avec quelques exemples pour découvrir l'interface
+          Ajouter des données de démonstration (désactivé pour un test grandeur nature)
         </label>
 
         <button className="primary-btn full-btn" disabled={busy}>
