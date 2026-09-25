@@ -111,4 +111,6 @@ export const api = {
       body: data,
       extraHeaders: setupToken ? { 'x-setup-token': setupToken } : undefined,
     }),
+  createManagedBuilding: data =>
+    request('/api/setup', { method: 'POST', body: { ...data, withSampleData: false } }),
 }
