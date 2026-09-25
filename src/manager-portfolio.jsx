@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import {
   Activity, AlertTriangle, Bell, Building2, CalendarDays, CheckCircle2, ChevronRight,
   ClipboardCopy, FileText, HelpCircle, Info, LayoutDashboard, LogOut, Mail, RefreshCw,
-  Search, Settings, ShieldCheck, Sparkles, Wrench, X,
+  Search, Settings, ShieldCheck, Sparkles, Wrench, X, Plus,
 } from 'lucide-react'
 import { api } from './api.js'
 import { Logo, Spinner, ErrorPanel } from './views.jsx'
@@ -52,6 +52,7 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
   const [query, setQuery] = useState('')
   const [prefs, setPrefs] = useState(readPrefs)
   const [notificationsOpen, setNotificationsOpen] = useState(false)
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
   const params = new URLSearchParams(location.hash.split('?')[1] || '')
   const view = params.get('view') || 'dashboard'
   const buildingSlug = params.get('building') || ''
@@ -61,6 +62,8 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
   const previewMode = view === 'preview'
   const modelV3Mode = view === 'model-v3'
   const portfolioView = ['dashboard', 'buildings', 'tickets', 'documents', 'deadlines', 'help', 'settings'].includes(view) ? view : 'dashboard'
+
+  const startOnboarding = () => setOnboardingOpen(true)
 
   const updatePrefs = patch => {
     const next = { ...prefs, ...patch }
@@ -144,6 +147,7 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
           </div>
           <div className="v2-manager-tools">
             {showSearch && <label className="v2-search"><Search /><input value={query} onChange={e => setQuery(e.target.value)} placeholder={searchPlaceholder(portfolioView)} /></label>}
+            <button className="v2-icon-btn" onClick={startOnboarding} aria-label="Ajouter une copropriété" title="Ajouter une copropriété"><Plus /></button>
             <div className="release-notification-wrap">
               <button className="v2-icon-btn release-bell" aria-label="Notifications" aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen(value => !value)}>
                 <Bell />{notifications.length > 0 && <span className="release-bell-badge">{notifications.length > 9 ? '9+' : notifications.length}</span>}
@@ -153,7 +157,7 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
           </div>
         </header>
 
-        {portfolioView === 'dashboard' && <DashboardView data={data} filteredBuildings={filteredBuildings} goBuilding={goBuilding} />}
+        {portfolioView === 'dashboard' && <DashboardView data={data} filteredBuildings={filteredBuildings} goBuilding={goBuilding} onStartOnboarding={startOnboarding} />}
         {portfolioView === 'buildings' && <BuildingsView buildings={filteredBuildings} goBuilding={goBuilding} />}
         {portfolioView === 'tickets' && <TicketsView tickets={filteredTickets} goBuilding={goBuilding} />}
         {portfolioView === 'documents' && <DocumentsView documents={filteredDocuments} goBuilding={goBuilding} />}
@@ -161,6 +165,15 @@ export default function ManagerPortfolioView({ session, onLogout, setToast }) {
         {portfolioView === 'help' && <HelpView session={session} data={data} onRefresh={load} setToast={setToast} />}
         {portfolioView === 'settings' && <SettingsView session={session} prefs={prefs} updatePrefs={updatePrefs} />}
       </section>
+      {onboardingOpen && <ManagedBuildingOnboarding
+        onClose={() => setOnboardingOpen(false)}
+        onCreated={async payload => {
+          const created = await api.createManagedBuilding(payload)
+          setOnboardingOpen(false)
+          setToast?.(`${created.buildingName} est prêt pour l’onboarding`)
+          location.hash = `/portfolio?view=building&building=${encodeURIComponent(created.buildingSlug)}`
+        }}
+      />}
     </main>
   )
 }
@@ -180,11 +193,12 @@ function NotificationPanel({ notifications, onClose }) {
   )
 }
 
-function DashboardView({ data, filteredBuildings, goBuilding }) {
+function DashboardView({ data, filteredBuildings, goBuilding, onStartOnboarding }) {
   return (
     <>
       <section className="v2-manager-hero">
         <div className="v2-manager-hero-copy"><CheckCircle2 /><div><h2>{data.summary.attention ? `${data.summary.attention} élément${data.summary.attention > 1 ? 's' : ''} à suivre` : 'Tout est sous contrôle'}</h2><p>CoproLink centralise les informations importantes de vos copropriétés et fait remonter les actions utiles.</p></div></div>
+        <button className="primary-btn" onClick={onStartOnboarding}><Plus /> Ajouter une copropriété</button>
         <div className="v2-manager-stats">
           <article><Building2 /><strong>{data.summary.buildings}</strong><span>copropriétés</span></article>
           <article><Bell /><strong>{data.summary.attention}</strong><span>éléments à traiter</span></article>
@@ -260,3 +274,54 @@ function searchPlaceholder(view) {
   return { dashboard: 'Rechercher une copropriété…', buildings: 'Rechercher une copropriété…', tickets: 'Rechercher un signalement…', documents: 'Rechercher un document…', deadlines: 'Rechercher une échéance…' }[view] || 'Rechercher…'
 }
 function BotPreview() { return <span className="ai-bot-preview"><Sparkles /><Mail /></span> }
+
+
+function ManagedBuildingOnboarding({ onClose, onCreated }) {
+  const [form, setForm] = useState({ name: '', address: '', lots: '', managerName: '', emergencyPhone: '' })
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const submit = async event => {
+    event.preventDefault()
+    if (busy) return
+    setBusy(true); setError('')
+    try {
+      await onCreated({
+        name: form.name.trim(),
+        address: form.address.trim(),
+        lots: Number(form.lots) || 0,
+        managerName: form.managerName.trim(),
+        emergencyPhone: form.emergencyPhone.trim(),
+      })
+    } catch (err) {
+      setError(err?.message || 'Impossible de créer la copropriété.')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="modal-backdrop">
+      <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="onboarding-title">
+        <div className="modal-head">
+          <div><span className="overline">Onboarding syndic</span><h2 id="onboarding-title">Créer une copropriété vide</h2></div>
+          <button className="icon-btn" onClick={onClose} aria-label="Fermer"><X /></button>
+        </div>
+        <form onSubmit={submit}>
+          <p className="muted-p">Commencez sans données d’exemple. Vous pourrez ensuite ajouter les lots, les personnes et lancer les premières communications.</p>
+          {error && <div className="form-error" role="alert">{error}</div>}
+          <label>Nom de la copropriété<input required maxLength={120} value={form.name} onChange={e => setForm(v => ({ ...v, name: e.target.value }))} placeholder="Résidence Pavillon 17" /></label>
+          <label>Adresse<input maxLength={200} value={form.address} onChange={e => setForm(v => ({ ...v, address: e.target.value }))} placeholder="Adresse de l’immeuble" /></label>
+          <div className="field-row">
+            <label>Nombre de lots<input type="number" min="0" value={form.lots} onChange={e => setForm(v => ({ ...v, lots: e.target.value }))} placeholder="52" /></label>
+            <label>Téléphone d’urgence<input maxLength={40} value={form.emergencyPhone} onChange={e => setForm(v => ({ ...v, emergencyPhone: e.target.value }))} /></label>
+          </div>
+          <label>Cabinet / syndic<input maxLength={120} value={form.managerName} onChange={e => setForm(v => ({ ...v, managerName: e.target.value }))} placeholder="Nom du syndic" /></label>
+          <div className="modal-actions">
+            <button type="button" className="secondary-btn" onClick={onClose}>Annuler</button>
+            <button className="primary-btn" disabled={busy}>{busy ? 'Création…' : 'Créer et commencer'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
