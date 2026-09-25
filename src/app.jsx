@@ -160,7 +160,14 @@ export default function App() {
   }
 
   const managesBuildings = data.user.isPlatformAdmin || data.memberships.some(m => m.role === 'manager')
+  const isBuildingReferent = data.memberships.some(m => m.isReferent === true)
   const wantsPortfolio = managesBuildings && (route.path === '' || route.path === 'portfolio')
+
+  if (!managesBuildings && isBuildingReferent && (route.path === '' || route.path === 'portfolio')) {
+    const referentBuilding = data.memberships.find(m => m.isReferent === true)
+    if (referentBuilding) location.hash = `/portfolio?view=building&building=${encodeURIComponent(referentBuilding.buildingSlug)}`
+    return <Spinner label="Ouverture de la gouvernance de l’immeuble…" />
+  }
 
   if (wantsPortfolio) {
     return (
