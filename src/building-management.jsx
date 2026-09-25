@@ -46,7 +46,9 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const fallback = session.memberships.find(m => m.role === 'manager')?.buildingSlug || session.memberships[0]?.buildingSlug || ''
   const slug = buildingSlug || fallback
   const membership = session.memberships.find(item => item.buildingSlug === slug)
-  const isAllowed = session.user.isPlatformAdmin || membership?.role === 'manager' || membership?.isReferent === true
+  const isSyndicOperator = session.user.isPlatformAdmin || membership?.role === 'manager'
+  const isReferent = membership?.isReferent === true
+  const isAllowed = isSyndicOperator || isReferent
 
   const [state, setState] = useState({ status: 'loading', workspace: null, model: null, access: [], error: null })
   const [section, setSection] = useState('overview')
@@ -76,7 +78,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   useEffect(() => { load() }, [slug, isAllowed])
 
   if (!slug) return <ErrorPanel title="Aucun immeuble" message="Aucune copropriété administrable n’est associée à ce compte." />
-  if (!isAllowed) return <ErrorPanel title="Accès non autorisé" message="La gestion CoproLink est réservée aux référents et gestionnaires autorisés." onRetry={() => { location.hash = '/portfolio' }} retryLabel="Retour au portefeuille" />
+  if (!isAllowed) return <ErrorPanel title="Accès non autorisé" message="Cet espace est réservé au syndic et aux référents CoproLink de l’immeuble." onRetry={() => { location.hash = '/resident' }} retryLabel="Retour à mon espace" />
   if (state.status === 'loading') return <Spinner label="Chargement de l’immeuble…" />
   if (state.status === 'error') return <ErrorPanel title="Immeuble inaccessible" message={state.error} onRetry={load} />
 
@@ -170,16 +172,24 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
     }
   }
 
-  const saveEmail = (person, email) => runAction(() => apiV3.update(slug, 'person', person.id, { email }))
-  const invitePerson = person => runAction(() => apiV3.invitePerson(slug, person.id))
+  const saveEmail = (person, email) => {
+    if (!isSyndicOperator) return Promise.reject(new Error('Seul le syndic peut modifier les coordonnées administratives.'))
+    return runAction(() => apiV3.update(slug, 'person', person.id, { email }))
+  }
+  const invitePerson = person => {
+    if (!isSyndicOperator) return Promise.reject(new Error('Seul le syndic peut envoyer les accès CoproLink.'))
+    return runAction(() => apiV3.invitePerson(slug, person.id))
+  }
 
   const toggleReferent = async (personId, checked) => {
+    if (!isSyndicOperator) throw new Error('Seul le syndic peut modifier les référents depuis cet écran.')
     const existing = referentByPerson.get(personId)
     if (checked && !existing) await runAction(() => apiV3.create(slug, 'referent', { personId }))
     if (!checked && existing) await runAction(() => apiV3.remove(slug, 'referent', existing.id))
   }
 
   const setRelationPreset = async (personId, unitId, presetKey) => {
+    if (!isSyndicOperator) throw new Error('Seul le syndic peut modifier le lien avec un lot.')
     const desired = new Set((RELATION_PRESETS[presetKey] || RELATION_PRESETS.occupant).relations)
     const current = activeRelations.filter(item => item.personId === personId && item.unitId === unitId)
     await runAction(async () => {
@@ -195,6 +205,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
 
   const addPerson = async event => {
     event.preventDefault()
+    if (!isSyndicOperator) return
     if (!clean(draft.fullName)) return
     setActionError('')
     try {
@@ -231,7 +242,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
         </nav>
         <div className="v2-sidebar-bottom">
           <button><Settings /> Paramètres</button>
-          <div className="v2-user-card"><span>{initials(session.user.fullName || session.user.email)}</span><div><strong>{session.user.fullName || session.user.email}</strong><small>Administration de l’immeuble</small></div></div>
+          <div className="v2-user-card"><span>{initials(session.user.fullName || session.user.email)}</span><div><strong>{session.user.fullName || session.user.email}</strong><small>{isSyndicOperator ? 'Syndic · administration' : 'Référent · gouvernance'}</small></div></div>
           <button onClick={onLogout}><LogOut /> Se déconnecter</button>
         </div>
       </aside>
@@ -265,12 +276,14 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
 
         {section === 'people' && (
           <div className="bm-content">
-            <div className="bm-page-head"><div><span>PERSONNES & ACCÈS</span><h2>Résidents, lots, rôles et accès CoproLink</h2><p>Gérez au même endroit le lien au lot, l’accès numérique, la visibilité et le statut de Référent CoproLink.</p></div><button className="bm-primary" onClick={() => setShowAdd(value => !value)}><Plus /> Ajouter une personne</button></div>
+            <div className="bm-page-head"><div><span>PERSONNES & ACCÈS</span><h2>Résidents, lots, rôles et accès CoproLink</h2><p>{isSyndicOperator ? 'Le syndic alimente les lots, personnes et accès. Les référents assurent la continuité et la gouvernance de l’immeuble.' : 'Vue de gouvernance : vous pouvez contrôler les personnes, lots et accès renseignés par le syndic. Les modifications administratives restent réservées au syndic.'}</p></div>{isSyndicOperator && <button className="bm-primary" onClick={() => setShowAdd(value => !value)}><Plus /> Ajouter une personne</button>}</div>
             <section className="bm-role-explainer"><article><UserCog /><h3>{referentPeople.length} référent{referentPeople.length > 1 ? 's' : ''}</h3><p>Les référents administrent CoproLink pour l’immeuble.</p></article><article><Users /><h3>{people.length} personne{people.length > 1 ? 's' : ''}</h3><p>Copropriétaires, occupants et locataires sont reliés à leurs lots.</p></article><article><Wrench /><h3>{professionals.length} professionnel{professionals.length > 1 ? 's' : ''}</h3><p>Le syndic et les prestataires restent séparés des résidents.</p></article></section>
 
             <div className="bm-directory-tools"><label><Search /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Rechercher un nom, un lot, un étage…" /></label><span>{directoryEntries.length} entrée{directoryEntries.length > 1 ? 's' : ''}</span></div>
 
-            {showAdd && (
+            {!isSyndicOperator && <section className="bm-warning"><ShieldCheck /><div><strong>Vue Référent CoproLink</strong><span>Le syndic reste responsable de l’encodage des lots, des personnes et de l’activation des accès.</span></div></section>}
+
+            {showAdd && isSyndicOperator && (
               <form className="bm-add-form" onSubmit={addPerson}>
                 <div>
                   <label>Nom et prénom<input value={draft.fullName} onChange={event => setDraft(value => ({ ...value, fullName: event.target.value }))} required /></label>
@@ -294,12 +307,12 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
                     const accessState = accessByPerson.get(row.person.id) || 'none'
                     return (
                       <article key={row.key}>
-                        <label className="bm-inline-field">Lot<input defaultValue={row.unit?.label || ''} disabled={!row.unit} onBlur={event => row.unit && clean(event.target.value) !== clean(row.unit.label) && runAction(() => apiV3.update(slug, 'unit', row.unit.id, { label: event.target.value }))} placeholder="4A" /></label>
+                        <label className="bm-inline-field">Lot<input defaultValue={row.unit?.label || ''} disabled={!row.unit || !isSyndicOperator} onBlur={event => isSyndicOperator && row.unit && clean(event.target.value) !== clean(row.unit.label) && runAction(() => apiV3.update(slug, 'unit', row.unit.id, { label: event.target.value }))} placeholder="4A" /></label>
                         <div className="bm-person-main"><span className="bm-avatar">{initials(row.person.fullName)}</span><div><strong>{row.person.fullName}</strong><small>{relationLabel(types)}</small><PersonAccessControl compact person={row.person} access={accessState} onSaveEmail={email => saveEmail(row.person, email)} onInvite={() => invitePerson(row.person)} /></div></div>
-                        <label className="bm-inline-field">Étage<input defaultValue={row.unit?.floor || ''} disabled={!row.unit} onBlur={event => row.unit && clean(event.target.value) !== clean(row.unit.floor) && runAction(() => apiV3.update(slug, 'unit', row.unit.id, { floor: event.target.value }))} placeholder="4" /></label>
-                        <label className="bm-select-label">Lien<select disabled={!row.unit} value={relationPresetFor(types)} onChange={event => row.unit && setRelationPreset(row.person.id, row.unit.id, event.target.value)}>{Object.entries(RELATION_PRESETS).map(([key, value]) => <option value={key} key={key}>{value.label}</option>)}</select></label>
-                        <div className="bm-visibility"><label className="bm-check"><input type="checkbox" checked={prefs.directoryVisible !== false} onChange={event => runAction(() => apiV3.update(slug, 'person', row.person.id, { directoryVisible: event.target.checked }))} /> Annuaire privé</label><label className="bm-check"><input type="checkbox" checked={prefs.hallVisible === true} onChange={event => runAction(() => apiV3.update(slug, 'person', row.person.id, { hallVisible: event.target.checked }))} /> Écran / hall</label></div>
-                        <label className="bm-check"><input type="checkbox" checked={referentByPerson.has(row.person.id)} onChange={event => toggleReferent(row.person.id, event.target.checked)} /> Référent</label>
+                        <label className="bm-inline-field">Étage<input defaultValue={row.unit?.floor || ''} disabled={!row.unit || !isSyndicOperator} onBlur={event => isSyndicOperator && row.unit && clean(event.target.value) !== clean(row.unit.floor) && runAction(() => apiV3.update(slug, 'unit', row.unit.id, { floor: event.target.value }))} placeholder="4" /></label>
+                        <label className="bm-select-label">Lien<select disabled={!row.unit || !isSyndicOperator} value={relationPresetFor(types)} onChange={event => isSyndicOperator && row.unit && setRelationPreset(row.person.id, row.unit.id, event.target.value)}>{Object.entries(RELATION_PRESETS).map(([key, value]) => <option value={key} key={key}>{value.label}</option>)}</select></label>
+                        <div className="bm-visibility"><label className="bm-check"><input type="checkbox" checked={prefs.directoryVisible !== false} disabled={!isSyndicOperator} onChange={event => isSyndicOperator && runAction(() => apiV3.update(slug, 'person', row.person.id, { directoryVisible: event.target.checked }))} /> Annuaire privé</label><label className="bm-check"><input type="checkbox" checked={prefs.hallVisible === true} disabled={!isSyndicOperator} onChange={event => isSyndicOperator && runAction(() => apiV3.update(slug, 'person', row.person.id, { hallVisible: event.target.checked }))} /> Écran / hall</label></div>
+                        <label className="bm-check"><input type="checkbox" checked={referentByPerson.has(row.person.id)} disabled={!isSyndicOperator} onChange={event => isSyndicOperator && toggleReferent(row.person.id, event.target.checked)} /> Référent</label>
                       </article>
                     )
                   })}</div>
