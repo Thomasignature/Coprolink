@@ -284,6 +284,18 @@ export const authorizeCoproLinkAdmin = async (req: Request, buildingSlug?: strin
   return { ...ctx, capabilities, can: (capability) => capabilities.includes(capability) };
 };
 
+/**
+ * Le syndic est l'opérateur administratif de l'immeuble : il alimente les lots,
+ * les personnes et les accès. Les Référents CoproLink conservent une vue de
+ * gouvernance mais ne remplacent pas le syndic pour ces écritures.
+ */
+export const authorizeSyndicOperator = async (req: Request, buildingSlug?: string | null): Promise<AuthContext> => {
+  const ctx = await authorize(req, { buildingSlug, require: "building:read" });
+  if (ctx.principal.kind !== "user") throw new HttpError(403, "Compte syndic requis");
+  if (ctx.principal.isPlatformAdmin || ctx.role === "manager") return ctx;
+  throw new HttpError(403, "Cette action est réservée au syndic ou à un administrateur plateforme");
+};
+
 export const requireUser = async (req: Request): Promise<UserPrincipal> => {
   const principal = await resolvePrincipal(req);
   if (!principal) throw new HttpError(401, "Authentification requise");
