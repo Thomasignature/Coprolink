@@ -63,6 +63,7 @@ export const api = {
   terminalSession: () => request('/api/session', { terminal: true }),
 
   workspace: slug => request(`/api/workspace${buildingQuery(slug)}`),
+  managerDashboard: () => request('/api/manager-dashboard'),
   display: () => request('/api/display', { terminal: true }),
 
   createTicket: (slug, data) =>
@@ -110,4 +111,6 @@ export const api = {
       body: data,
       extraHeaders: setupToken ? { 'x-setup-token': setupToken } : undefined,
     }),
+  createManagedBuilding: data =>
+    request('/api/setup', { method: 'POST', body: { ...data, withSampleData: false } }),
 }
