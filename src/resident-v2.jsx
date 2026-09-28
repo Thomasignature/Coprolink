@@ -3,6 +3,7 @@ import {
   Bell, Building2, CalendarDays, CheckCircle2, ChevronRight, FileText, Home,
   LogOut, Megaphone, Plus, Settings, Wrench,
 } from 'lucide-react'
+import { api } from './api.js'
 import { Logo } from './views.jsx'
 import { longDate, metaFor } from './format.js'
 import ResidentLotView from './resident-lot.jsx'
@@ -167,7 +168,9 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
               {documents.length === 0
                 ? <div className="rm-empty"><FileText /><strong>Aucun document accessible</strong><span>Les documents disponibles pour ce profil apparaîtront ici.</span></div>
                 : documents.map(doc => (
-                  <button className="rm-doc" key={doc.id} onClick={() => setToast(doc.available ? 'Ouverture du document bientôt disponible' : 'Le stockage du fichier n’est pas encore activé')}>
+                  <button className="rm-doc" key={doc.id} onClick={() => (doc.available
+                    ? window.open(api.documentUrl(data.building.slug, doc.id), '_blank', 'noopener')
+                    : setToast('Aucun fichier n’est encore associé à ce document'))}>
                     <FileText /><div><strong>{doc.name}</strong><small>Mis à jour le {longDate(doc.updatedOn)}</small></div><ChevronRight />
                   </button>
                 ))}

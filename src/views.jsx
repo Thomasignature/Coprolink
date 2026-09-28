@@ -5,6 +5,7 @@ import {
   MessageSquareText, Plus, Search, ShieldCheck, Smartphone, Sparkles, TicketCheck, Trash2, Users,
   WalletCards, Wrench, X,
 } from 'lucide-react'
+import { api } from './api.js'
 import { dayAndTime, dayNumber, longDate, metaFor, money, monthShort, roleLabel, shortDate, statusMeta, timelineDate } from './format.js'
 
 export function Logo({ compact = false }) {
@@ -104,6 +105,12 @@ function AgendaRow({ e }) {
       <time>{e.eventTime}</time>
     </div>
   )
+}
+
+/** Ouvre le fichier d'un document ; la session Identity (cookie) suffit côté serveur. */
+const openDocument = (slug, d, setToast) => {
+  if (!d.available) { setToast('Aucun fichier n\'est encore associé à ce document'); return }
+  window.open(api.documentUrl(slug, d.id), '_blank', 'noopener')
 }
 
 function DocumentTile({ d, onOpen }) {
@@ -232,7 +239,12 @@ export function DisplayView({ data, onReport, onRefresh, setToast }) {
                 {data.documents.length === 0
                   ? <EmptyState icon={<FileText />} title="Aucun document" text="Les documents publics apparaîtront ici." />
                   : data.documents.map(d => (
-                    <DocumentTile key={d.id} d={d} onOpen={() => setToast('Le stockage des documents n\'est pas encore activé')} />
+                    <DocumentTile
+                      key={d.id} d={d}
+                      onOpen={() => (d.available
+                        ? api.openTerminalDocument(d.id).catch(error => setToast(error.message))
+                        : setToast('Aucun fichier n\'est encore associé à ce document'))}
+                    />
                   ))}
               </div>
             </div>
@@ -329,7 +341,7 @@ export function ResidentView({ data, session, onReport, onLogout, setToast }) {
         <div className="content-wrap">
           {section === 'overview' && <ResidentOverview data={data} session={session} setSection={setSection} setReport={setReport} />}
           {section === 'tickets' && <ResidentTickets tickets={data.myTickets} onReport={() => setReport(true)} />}
-          {section === 'documents' && <DocumentsSection docs={data.documents} setToast={setToast} />}
+          {section === 'documents' && <DocumentsSection docs={data.documents} slug={data.building.slug} setToast={setToast} />}
           {section === 'finance' && <ResidentFinance data={data} />}
           {section === 'agenda' && <AgendaSection events={data.events} />}
         </div>
@@ -494,7 +506,13 @@ function ResidentTicket({ t }) {
   )
 }
 
-function DocumentsSection({ docs, setToast }) {
+/**
+ * Liste des documents. `manage` (espace syndic uniquement) ajoute le
+ * téléversement, le changement de visibilité et la suppression ; le serveur
+ * revérifie `documents:manage` à chaque appel.
+ */
+function DocumentsSection({ docs, slug, setToast, manage }) {
+  const withoutFile = docs.filter(d => !d.available).length
   return (
     <>
       <div className="content-heading">
@@ -503,16 +521,99 @@ function DocumentsSection({ docs, setToast }) {
           <p>Documents de l'ACP et documents réservés à votre espace.</p>
         </div>
       </div>
-      <div className="notice-inline">
-        <Info size={16} />
-        <span>Les fichiers ne sont pas encore stockés sur la plateforme : seules leurs fiches sont référencées.</span>
-      </div>
+      {manage && <DocumentUpload manage={manage} setToast={setToast} />}
+      {withoutFile > 0 && (
+        <div className="notice-inline">
+          <Info size={16} />
+          <span>
+            {withoutFile} document{withoutFile > 1 ? 's' : ''} référencé{withoutFile > 1 ? 's' : ''} sans fichier
+            {manage ? ' : ajoutez le fichier ci-dessus puis supprimez l\'ancienne fiche.' : '.'}
+          </span>
+        </div>
+      )}
       <div className="document-list">
         {docs.length === 0
-          ? <EmptyState icon={<FileText />} title="Aucun document" text="Le syndic n'a référencé aucun document." />
-          : docs.map(d => <DocumentTile key={d.id} d={d} onOpen={() => setToast('Le stockage des documents n\'est pas encore activé')} />)}
+          ? <EmptyState icon={<FileText />} title="Aucun document" text={manage ? 'Ajoutez un premier document.' : 'Le syndic n\'a partagé aucun document.'} />
+          : docs.map(d => (manage
+            ? (
+              <div className="terminal-row" key={d.id}>
+                <div><DocumentTile d={d} onOpen={() => openDocument(slug, d, setToast)} /></div>
+                <select
+                  value={d.access}
+                  aria-label={`Visibilité de ${d.name}`}
+                  onChange={async e => {
+                    try {
+                      await manage.update(d.id, { access: e.target.value })
+                      setToast('Visibilité mise à jour')
+                    } catch (error) { setToast(error.message) }
+                  }}
+                >
+                  <option value="private">Privé · membres</option>
+                  <option value="public">Public · écran des communs</option>
+                </select>
+                <button
+                  className="danger-btn"
+                  onClick={async () => {
+                    if (!window.confirm(`Supprimer « ${d.name} » ?`)) return
+                    try {
+                      await manage.remove(d.id)
+                      setToast('Document supprimé')
+                    } catch (error) { setToast(error.message) }
+                  }}
+                ><Trash2 size={16} /> Supprimer</button>
+              </div>
+            )
+            : <DocumentTile key={d.id} d={d} onOpen={() => openDocument(slug, d, setToast)} />))}
       </div>
     </>
+  )
+}
+
+function DocumentUpload({ manage, setToast }) {
+  const [file, setFile] = useState(null)
+  const [name, setName] = useState('')
+  const [access, setAccess] = useState('private')
+  const [busy, setBusy] = useState(false)
+  const inputRef = useRef(null)
+
+  return (
+    <section className="card">
+      <form
+        className="inline-form"
+        onSubmit={async e => {
+          e.preventDefault()
+          if (!file || busy) return
+          setBusy(true)
+          const form = new FormData()
+          form.append('file', file)
+          form.append('name', name.trim())
+          form.append('access', access)
+          try {
+            await manage.upload(form)
+            setFile(null); setName(''); setAccess('private')
+            if (inputRef.current) inputRef.current.value = ''
+            setToast('Document ajouté')
+          } catch (error) { setToast(error.message) }
+          setBusy(false)
+        }}
+      >
+        <label className="grow">Fichier (15 Mo max.)
+          <input
+            ref={inputRef} type="file" required
+            accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.csv,.doc,.docx,.xls,.xlsx,.odt,.ods"
+            onChange={e => setFile(e.target.files?.[0] ?? null)}
+          />
+        </label>
+        <label className="grow">Nom affiché<input value={name} onChange={e => setName(e.target.value)} placeholder="Par défaut : nom du fichier" maxLength={160} /></label>
+        <label>Visibilité
+          <select value={access} onChange={e => setAccess(e.target.value)}>
+            <option value="private">Privé · membres</option>
+            <option value="public">Public · écran des communs</option>
+          </select>
+        </label>
+        <button className="primary-btn" disabled={!file || busy}><Plus /> {busy ? 'Envoi…' : 'Ajouter'}</button>
+      </form>
+    </section>
   )
 }
 
@@ -578,8 +679,17 @@ function AgendaSection({ events }) {
 export function SyndicView({ data, session, actions, onLogout, setToast }) {
   const [section, setSection] = useState('dashboard')
   const [selected, setSelected] = useState(null)
+  // `true` pour une création, ou l'élément existant à modifier.
   const [compose, setCompose] = useState(false)
   const [eventOpen, setEventOpen] = useState(false)
+
+  const removeWithConfirm = async (label, action, done) => {
+    if (!window.confirm(`Supprimer « ${label} » ? Les occupants ne la verront plus.`)) return
+    try {
+      await action()
+      setToast(done)
+    } catch (error) { setToast(error.message) }
+  }
 
   const tickets = data.buildingTickets
   const open = tickets.filter(t => t.status !== 'resolved')
@@ -616,6 +726,7 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
           <NavItem icon={<MessageSquareText />} label="Communications" active={section === 'comms'} onClick={() => setSection('comms')} />
           <NavItem icon={<CalendarDays />} label="Agenda" active={section === 'agenda'} onClick={() => setSection('agenda')} />
           <NavItem icon={<FileText />} label="Documents" active={section === 'docs'} onClick={() => setSection('docs')} />
+          <NavItem icon={<WalletCards />} label="Finances" active={section === 'finance'} onClick={() => setSection('finance')} />
           <NavItem icon={<Gauge />} label="Écrans" active={section === 'terminals'} onClick={() => setSection('terminals')} />
           <NavItem icon={<Users />} label="Accès" active={section === 'members'} onClick={() => setSection('members')} />
         </nav>
@@ -635,9 +746,25 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
             />
           )}
           {section === 'tickets' && <SyndicTickets tickets={tickets} setSelected={setSelected} />}
-          {section === 'comms' && <SyndicComms data={data} setCompose={setCompose} />}
-          {section === 'agenda' && <SyndicAgenda events={data.events} onAdd={() => setEventOpen(true)} />}
-          {section === 'docs' && <DocumentsSection docs={data.documents} setToast={setToast} />}
+          {section === 'comms' && (
+            <SyndicComms
+              data={data} setCompose={setCompose}
+              onDelete={a => removeWithConfirm(a.title, () => actions.deleteAnnouncement(a.id), 'Communication retirée')}
+            />
+          )}
+          {section === 'agenda' && (
+            <SyndicAgenda
+              events={data.events} onAdd={() => setEventOpen(true)} onEdit={e => setEventOpen(e)}
+              onDelete={e => removeWithConfirm(e.title, () => actions.deleteEvent(e.id), 'Date retirée de l\'agenda')}
+            />
+          )}
+          {section === 'docs' && (
+            <DocumentsSection
+              docs={data.documents} slug={data.building.slug} setToast={setToast}
+              manage={{ upload: actions.uploadDocument, update: actions.updateDocument, remove: actions.deleteDocument }}
+            />
+          )}
+          {section === 'finance' && <SyndicFinance actions={actions} setToast={setToast} />}
           {section === 'terminals' && <TerminalsPanel actions={actions} setToast={setToast} />}
           {section === 'members' && <MembersPanel actions={actions} setToast={setToast} />}
         </div>
@@ -645,24 +772,36 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
       {current && <SyndicTicketDrawer ticket={current} onClose={() => setSelected(null)} changeStatus={changeStatus} />}
       {compose && (
         <ComposeModal
+          initial={compose === true ? null : compose}
           onClose={() => setCompose(false)}
           onPublish={async payload => {
             try {
-              await actions.publishAnnouncement(payload)
+              if (compose === true) {
+                await actions.publishAnnouncement(payload)
+                setToast(payload.isPublic ? 'Communication publiée sur l\'app et l\'écran' : 'Communication publiée dans l\'app')
+              } else {
+                await actions.updateAnnouncement(compose.id, payload)
+                setToast('Communication modifiée')
+              }
               setCompose(false)
-              setToast(payload.isPublic ? 'Communication publiée sur l\'app et l\'écran' : 'Communication publiée dans l\'app')
             } catch (error) { setToast(error.message) }
           }}
         />
       )}
       {eventOpen && (
         <EventModal
+          initial={eventOpen === true ? null : eventOpen}
           onClose={() => setEventOpen(false)}
           onCreate={async payload => {
             try {
-              await actions.createEvent(payload)
+              if (eventOpen === true) {
+                await actions.createEvent(payload)
+                setToast('Date ajoutée à l\'agenda')
+              } else {
+                await actions.updateEvent(eventOpen.id, payload)
+                setToast('Date modifiée')
+              }
               setEventOpen(false)
-              setToast('Date ajoutée à l\'agenda')
             } catch (error) { setToast(error.message) }
           }}
         />
@@ -780,7 +919,7 @@ function SyndicTickets({ tickets, setSelected }) {
   )
 }
 
-function SyndicComms({ data, setCompose }) {
+function SyndicComms({ data, setCompose, onDelete }) {
   return (
     <>
       <div className="content-heading">
@@ -805,6 +944,10 @@ function SyndicComms({ data, setCompose }) {
                 {a.isPublic && <span><Gauge /> Écran</span>}
                 <span><BookOpen /> Journal</span>
               </div>
+              <div className="item-actions">
+                <button className="ghost-btn" onClick={() => setCompose(a)}><Wrench size={16} /> Modifier</button>
+                <button className="danger-btn" onClick={() => onDelete(a)}><Trash2 size={16} /> Retirer</button>
+              </div>
             </article>
           ))}
       </div>
@@ -812,7 +955,7 @@ function SyndicComms({ data, setCompose }) {
   )
 }
 
-function SyndicAgenda({ events, onAdd }) {
+function SyndicAgenda({ events, onAdd, onEdit, onDelete }) {
   return (
     <>
       <div className="content-heading">
@@ -823,7 +966,15 @@ function SyndicAgenda({ events, onAdd }) {
         <div className="agenda-list">
           {events.length === 0
             ? <EmptyState icon={<CalendarDays />} title="Aucune date" text="Ajoutez une première date à l'agenda." />
-            : events.map(e => <AgendaRow key={e.id} e={e} />)}
+            : events.map(e => (
+              <div key={e.id}>
+                <AgendaRow e={e} />
+                <div className="item-actions">
+                  <button className="ghost-btn" onClick={() => onEdit(e)}><Wrench size={16} /> Modifier</button>
+                  <button className="danger-btn" onClick={() => onDelete(e)}><Trash2 size={16} /> Retirer</button>
+                </div>
+              </div>
+            ))}
         </div>
       </section>
     </>
@@ -1006,6 +1157,119 @@ function TerminalsPanel({ actions, setToast }) {
         )}
       </section>
     </>
+  )
+}
+
+/**
+ * Saisie des chiffres financiers par le syndic. Chaque copropriétaire ne voit
+ * ensuite que sa propre situation (appel trimestriel, solde) dans son espace.
+ */
+function SyndicFinance({ actions, setToast }) {
+  const [state, setState] = useState({ loading: true, error: null, data: null })
+  const [figures, setFigures] = useState({ reserveFund: '', yearlyBudget: '', yearlySpent: '' })
+  const [busy, setBusy] = useState(false)
+
+  const apply = data => {
+    setState({ loading: false, error: null, data })
+    setFigures({
+      reserveFund: String(data.building.reserveFund),
+      yearlyBudget: String(data.building.yearlyBudget),
+      yearlySpent: String(data.building.yearlySpent),
+    })
+  }
+
+  const reload = async () => {
+    try { apply(await actions.finances()) } catch (error) { setState({ loading: false, error: error.message, data: null }) }
+  }
+
+  useEffect(() => { reload() }, [])
+
+  return (
+    <>
+      <div className="content-heading">
+        <div>
+          <span className="overline">Finances</span><h1>Des chiffres à jour, sans export.</h1>
+          <p>Chaque copropriétaire ne voit que sa propre situation ; les chiffres de l'immeuble sont visibles de tous les membres.</p>
+        </div>
+      </div>
+      {state.loading && <Spinner label="Chargement des finances…" />}
+      {state.error && <ErrorPanel title="Finances indisponibles" message={state.error} onRetry={reload} />}
+      {state.data && (
+        <>
+          <section className="card">
+            <form
+              className="inline-form"
+              onSubmit={async e => {
+                e.preventDefault()
+                if (busy) return
+                setBusy(true)
+                try {
+                  apply(await actions.updateBuildingFinances(figures))
+                  setToast('Chiffres de l\'immeuble enregistrés')
+                } catch (error) { setToast(error.message) }
+                setBusy(false)
+              }}
+            >
+              {[['reserveFund', 'Fonds de réserve (€)'], ['yearlyBudget', 'Budget annuel (€)'], ['yearlySpent', 'Dépensé sur l\'exercice (€)']].map(([key, label]) => (
+                <label className="grow" key={key}>{label}
+                  <input
+                    type="number" min="0" step="0.01" inputMode="decimal" required
+                    value={figures[key]} onChange={e => setFigures(f => ({ ...f, [key]: e.target.value }))}
+                  />
+                </label>
+              ))}
+              <button className="primary-btn" disabled={busy}><Check /> Enregistrer</button>
+            </form>
+          </section>
+          <section className="card">
+            <div className="card-head"><div><span className="overline">Par membre</span><h3>Appel trimestriel et solde</h3></div></div>
+            {state.data.members.length === 0
+              ? <EmptyState icon={<WalletCards />} title="Aucun membre" text="Invitez d'abord les copropriétaires." />
+              : (
+                <div className="terminal-list">
+                  {state.data.members.map(m => <MemberFinanceRow key={m.id} member={m} actions={actions} setToast={setToast} onSaved={apply} />)}
+                </div>
+              )}
+          </section>
+        </>
+      )}
+    </>
+  )
+}
+
+function MemberFinanceRow({ member, actions, setToast, onSaved }) {
+  const [quarterlyCall, setQuarterlyCall] = useState(String(member.quarterlyCall))
+  const [balance, setBalance] = useState(String(member.balance))
+  const [busy, setBusy] = useState(false)
+
+  return (
+    <form
+      className="terminal-row"
+      onSubmit={async e => {
+        e.preventDefault()
+        if (busy) return
+        setBusy(true)
+        try {
+          onSaved(await actions.updateMemberFinances(member.id, { quarterlyCall, balance }))
+          setToast('Situation enregistrée')
+        } catch (error) { setToast(error.message) }
+        setBusy(false)
+      }}
+    >
+      <div>
+        <strong>{member.fullName || member.email}</strong>
+        <small>{member.unitLabel || 'Lot non renseigné'} · {roleLabel(member.role)}</small>
+      </div>
+      <div className="inline-form">
+        <label>Appel trimestriel (€)
+          <input type="number" min="0" step="0.01" inputMode="decimal" required value={quarterlyCall} onChange={e => setQuarterlyCall(e.target.value)} />
+        </label>
+        <label>Solde dû (€)
+          <input type="number" step="0.01" inputMode="decimal" required value={balance} onChange={e => setBalance(e.target.value)} />
+        </label>
+        <button className="ghost-btn" disabled={busy}><Check size={16} /> Enregistrer</button>
+      </div>
+    </form>
   )
 }
 
@@ -1335,10 +1599,10 @@ function TicketModal({ ticket, onClose, publicView = false }) {
   )
 }
 
-function ComposeModal({ onClose, onPublish }) {
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
-  const [isPublic, setIsPublic] = useState(true)
+function ComposeModal({ initial = null, onClose, onPublish }) {
+  const [title, setTitle] = useState(initial?.title ?? '')
+  const [body, setBody] = useState(initial?.body ?? '')
+  const [isPublic, setIsPublic] = useState(initial?.isPublic ?? true)
   const [busy, setBusy] = useState(false)
 
   return (
@@ -1353,7 +1617,7 @@ function ComposeModal({ onClose, onPublish }) {
         }}
       >
         <div className="modal-head">
-          <div><span className="overline">Communication</span><h2 id="compose-title">Publier une information</h2></div>
+          <div><span className="overline">Communication</span><h2 id="compose-title">{initial ? 'Modifier la communication' : 'Publier une information'}</h2></div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Fermer"><X /></button>
         </div>
         <label>Titre<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex. Coupure d'eau programmée" required maxLength={80} /></label>
@@ -1368,19 +1632,19 @@ function ComposeModal({ onClose, onPublish }) {
         </div>
         <div className="modal-actions">
           <button type="button" className="secondary-btn" onClick={onClose}>Annuler</button>
-          <button className="primary-btn" disabled={busy}><Mail /> {busy ? 'Publication…' : 'Publier'}</button>
+          <button className="primary-btn" disabled={busy}><Mail /> {busy ? 'Publication…' : initial ? 'Enregistrer' : 'Publier'}</button>
         </div>
       </form>
     </Modal>
   )
 }
 
-function EventModal({ onClose, onCreate }) {
-  const [title, setTitle] = useState('')
-  const [detail, setDetail] = useState('')
-  const [eventDate, setEventDate] = useState('')
-  const [eventTime, setEventTime] = useState('')
-  const [isPublic, setIsPublic] = useState(true)
+function EventModal({ initial = null, onClose, onCreate }) {
+  const [title, setTitle] = useState(initial?.title ?? '')
+  const [detail, setDetail] = useState(initial?.detail ?? '')
+  const [eventDate, setEventDate] = useState(initial?.eventDate ?? '')
+  const [eventTime, setEventTime] = useState(initial?.eventTime ?? '')
+  const [isPublic, setIsPublic] = useState(initial?.isPublic ?? true)
   const [busy, setBusy] = useState(false)
 
   return (
@@ -1395,7 +1659,7 @@ function EventModal({ onClose, onCreate }) {
         }}
       >
         <div className="modal-head">
-          <div><span className="overline">Agenda</span><h2 id="event-title">Ajouter une date</h2></div>
+          <div><span className="overline">Agenda</span><h2 id="event-title">{initial ? 'Modifier la date' : 'Ajouter une date'}</h2></div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Fermer"><X /></button>
         </div>
         <label>Intitulé<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex. Maintenance ascenseur" required maxLength={80} /></label>
@@ -1410,7 +1674,7 @@ function EventModal({ onClose, onCreate }) {
         </label>
         <div className="modal-actions">
           <button type="button" className="secondary-btn" onClick={onClose}>Annuler</button>
-          <button className="primary-btn" disabled={busy}><CalendarDays /> {busy ? 'Ajout…' : 'Ajouter'}</button>
+          <button className="primary-btn" disabled={busy}><CalendarDays /> {busy ? 'Enregistrement…' : initial ? 'Enregistrer' : 'Ajouter'}</button>
         </div>
       </form>
     </Modal>
