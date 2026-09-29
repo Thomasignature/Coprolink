@@ -8,6 +8,7 @@ import { api } from './api.js'
 import { apiV3 } from './api-v3.js'
 import { ErrorPanel, Logo, Spinner } from './views.jsx'
 import PersonAccessControl from './person-access-control.jsx'
+import SyndicAssembliesPanel from './syndic-assemblies.jsx'
 import './building-management.css'
 
 const RELATION_PRESETS = {
@@ -238,6 +239,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
           <button onClick={() => { location.hash = '/portfolio' }}><LayoutDashboard /> Tableau de bord</button>
           <button className={section === 'overview' ? 'active' : ''} onClick={() => setSection('overview')}><Building2 /> Vue d’ensemble</button>
           <button className={section === 'people' ? 'active' : ''} onClick={() => setSection('people')}><Users /> Personnes & accès</button>
+          <button className={section === 'assemblies' ? 'active' : ''} onClick={() => setSection('assemblies')}><CalendarDays /> Assemblées générales</button>
           {isSyndicOperator && <button onClick={() => { location.hash = `/syndic?building=${encodeURIComponent(slug)}` }}><Wrench /> Espace syndic</button>}
         </nav>
         <div className="v2-sidebar-bottom">
@@ -267,11 +269,16 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
             <div className="bm-grid">
               <section className="bm-card"><div className="bm-card-head"><div><span>CONTINUITÉ</span><h3>Référents CoproLink</h3></div><UserCog /></div>{referentPeople.length ? referentPeople.map(person => <div className="bm-person-row" key={person.id}><CircleUserRound /><div><strong>{person.fullName}</strong><small>{person.unitLabel || relationLabel(person.relations)}</small></div><span>Référent</span></div>) : <div className="bm-empty"><UserCog /><strong>Aucun référent désigné</strong><p>Deux référents sont recommandés pour assurer la continuité.</p><button onClick={() => setSection('people')}>Gérer les personnes</button></div>}</section>
               <section className="bm-card"><div className="bm-card-head"><div><span>PERSONNES & ACCÈS</span><h3>Résidents, lots et accès</h3></div><Users /></div><p className="bm-card-copy">{people.length} personne{people.length > 1 ? 's' : ''}, {units.length} lot{units.length > 1 ? 's' : ''} et {referentPeople.length} référent{referentPeople.length > 1 ? 's' : ''} enregistrés.</p><button className="bm-primary" onClick={() => setSection('people')}>{isSyndicOperator ? 'Gérer les personnes' : 'Consulter les personnes'} <ChevronRight /></button></section>
+              <section className="bm-card"><div className="bm-card-head"><div><span>ASSEMBLÉES GÉNÉRALES</span><h3>Participation & procurations</h3></div><CalendarDays /></div><p className="bm-card-copy">Préparez la prochaine AG, publiez l’ordre du jour et suivez les réponses.</p><button className="bm-primary" onClick={() => setSection('assemblies')}>{isSyndicOperator ? 'Préparer une AG' : 'Consulter les AG'} <ChevronRight /></button></section>
               <section className="bm-card"><div className="bm-card-head"><div><span>SYNDIC / PROFESSIONNELS</span><h3>Intervenants liés</h3></div><Wrench /></div>{professionals.length ? professionals.map(item => <div className="bm-person-row" key={item.id}><Wrench /><div><strong>{item.organizationName || item.contactName || 'Professionnel'}</strong><small>{item.email || item.phone || item.professionalType}</small></div><span>{item.professionalType === 'syndic' ? 'Syndic' : 'Professionnel'}</span></div>) : <p className="bm-card-copy">Aucun professionnel enregistré.</p>}</section>
               <section className="bm-card"><div className="bm-card-head"><div><span>ÉCHÉANCES</span><h3>Prochaine date</h3></div><CalendarDays /></div>{nextEvent ? <div className="bm-next"><strong>{nextEvent.title}</strong><span>{nextEvent.eventDate} {nextEvent.eventTime || ''}</span></div> : <p className="bm-card-copy">Aucune date à venir.</p>}</section>
               <section className="bm-card"><div className="bm-card-head"><div><span>DOCUMENTS</span><h3>Mémoire de l’immeuble</h3></div><FileText /></div><strong className="bm-big-number">{documentsCount}</strong><p className="bm-card-copy">documents actuellement référencés.</p></section>
             </div>
           </div>
+        )}
+
+        {section === 'assemblies' && (
+          <div className="bm-content"><SyndicAssembliesPanel buildingSlug={slug} readOnly={!isSyndicOperator} /></div>
         )}
 
         {section === 'people' && (
