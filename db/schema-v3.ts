@@ -1,6 +1,7 @@
 import {
   pgTable, serial, text, integer, boolean, timestamp, date, index, uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { buildings, users, events } from "./schema.js";
 
 export const RELATION_TYPES = ["owner", "occupant", "tenant"] as const;
@@ -49,6 +50,9 @@ export const unitPersonRelations = pgTable("unit_person_relations", {
 }, (t) => [
   index("unit_person_relations_unit_idx").on(t.unitId),
   index("unit_person_relations_person_idx").on(t.personId),
+  uniqueIndex("unit_person_relations_active_unique_idx")
+    .on(t.unitId, t.personId, t.relationType)
+    .where(sql`${t.endDate} IS NULL`),
 ]);
 
 export const buildingReferents = pgTable("building_referents", {
@@ -58,7 +62,12 @@ export const buildingReferents = pgTable("building_referents", {
   isPrimary: boolean("is_primary").notNull().default(false),
   startedAt: timestamp("started_at").notNull().defaultNow(),
   endedAt: timestamp("ended_at"),
-}, (t) => [index("building_referents_building_idx").on(t.buildingId)]);
+}, (t) => [
+  index("building_referents_building_idx").on(t.buildingId),
+  uniqueIndex("building_referents_active_person_idx")
+    .on(t.buildingId, t.personId)
+    .where(sql`${t.endedAt} IS NULL`),
+]);
 
 export const buildingProfessionals = pgTable("building_professionals", {
   id: serial().primaryKey(),
