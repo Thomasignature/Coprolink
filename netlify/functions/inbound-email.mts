@@ -3,8 +3,9 @@ import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { announcements, buildings, documents, events, ticketUpdates, tickets } from "../../db/schema.js";
 import { inboundEmails } from "../../db/schema-v3.js";
-import { authorizeCoproLinkAdmin, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { authorizeCoproLinkAdmin, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import { writeAudit } from "../lib/data.mts";
+import { verifyResendWebhook, WebhookAuthError } from "../lib/resend-webhook.mts";
 
 const normalizeAddress = (value: unknown) => String(value ?? "").trim().toLowerCase();
 const firstAddress = (value: unknown) => Array.isArray(value) ? normalizeAddress(value[0]) : normalizeAddress(value);
@@ -277,15 +278,16 @@ const executeInboundAction = async (req: Request) => {
 };
 
 const receiveResendWebhook = async (req: Request) => {
-  await ensureInboundEmailTable();
-  const url = new URL(req.url);
-  const expectedToken = Netlify.env.get("COPROLINK_INBOUND_TEST_TOKEN") || "";
-  const suppliedToken = url.searchParams.get("token") || "";
-  if (!expectedToken || suppliedToken !== expectedToken) return Response.json({ error: "Webhook non autorisé" }, { status: 401 });
-
   const raw = await req.text();
+  const secret = Netlify.env.get("RESEND_WEBHOOK_SECRET") || "";
   let event: any;
-  try { event = JSON.parse(raw); } catch { return Response.json({ error: "Payload JSON invalide" }, { status: 400 }); }
+  try {
+    event = verifyResendWebhook(raw, req.headers, secret);
+  } catch (error) {
+    if (error instanceof WebhookAuthError) throw new HttpError(error.status, error.message);
+    throw error;
+  }
+  await ensureInboundEmailTable();
   if (event?.type !== "email.received") return Response.json({ ok: true, ignored: true });
 
   const data = event?.data || {};

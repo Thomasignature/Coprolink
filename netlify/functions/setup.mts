@@ -63,9 +63,11 @@ export default async (req: Request) => {
     const [clash] = await db.select().from(buildings).where(sql`${buildings.slug} = ${slug}`).limit(1);
     if (clash) slug = `${slug}-${Date.now().toString(36).slice(-4)}`;
 
-    const [building] = await db
-      .insert(buildings)
-      .values({
+    // Creating the building, its first manager and optional seed data is one
+    // domain operation. Any failure rolls the whole onboarding back instead of
+    // leaving an inaccessible or half-populated building behind.
+    const building = await db.transaction(async (tx) => {
+      const [created] = await tx.insert(buildings).values({
         slug,
         name,
         address,
@@ -73,29 +75,28 @@ export default async (req: Request) => {
         managerName,
         emergencyPhone: readString(body.emergencyPhone, "urgence", { max: 40, required: false }),
         healthScore: 0,
-      })
-      .returning();
+      }).returning();
 
-    await db.insert(buildingMembers).values({
-      buildingId: building.id,
-      userId: principal.userId,
-      role: "manager",
-      unitLabel: readString(body.unitLabel, "lot", { max: 80, required: false }),
-    });
-
-    if (managerName) {
-      await db.insert(buildingProfessionals).values({
-        buildingId: building.id,
-        professionalType: "syndic",
-        organizationName: managerName,
-        contactName: principal.fullName || "",
-        email: principal.email,
+      await tx.insert(buildingMembers).values({
+        buildingId: created.id,
+        userId: principal.userId,
+        role: "manager",
+        unitLabel: readString(body.unitLabel, "lot", { max: 80, required: false }),
       });
-    }
 
-    if (withSampleData) {
-      await seedSampleContent(building.id, principal.userId);
-    }
+      if (managerName) {
+        await tx.insert(buildingProfessionals).values({
+          buildingId: created.id,
+          professionalType: "syndic",
+          organizationName: managerName,
+          contactName: principal.fullName || "",
+          email: principal.email,
+        });
+      }
+
+      if (withSampleData) await seedSampleContent(tx, created.id, principal.userId);
+      return created;
+    });
 
     return Response.json(
       { buildingSlug: building.slug, buildingName: building.name, role: "manager" },
@@ -110,7 +111,9 @@ export default async (req: Request) => {
  * Contenu de démarrage, explicitement demandé par l'appelant. Sert à ce que
  * l'écran des communs ne soit pas vide le jour de l'installation.
  */
-const seedSampleContent = async (buildingId: number, userId: string) => {
+type SetupTransaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+const seedSampleContent = async (database: SetupTransaction, buildingId: number, userId: string) => {
   const today = new Date();
   const inDays = (days: number) => {
     const d = new Date(today);
@@ -118,7 +121,7 @@ const seedSampleContent = async (buildingId: number, userId: string) => {
     return d.toISOString().slice(0, 10);
   };
 
-  await db.insert(announcements).values({
+  await database.insert(announcements).values({
     buildingId,
     title: "Bienvenue sur CoproLink",
     body: "Cet écran affiche les informations publiques de la résidence : interventions en cours, prochaines dates et documents pratiques.",
@@ -127,18 +130,18 @@ const seedSampleContent = async (buildingId: number, userId: string) => {
     authorUserId: userId,
   });
 
-  await db.insert(events).values([
+  await database.insert(events).values([
     { buildingId, title: "Maintenance ascenseur", detail: "Entretien trimestriel", eventDate: inDays(12), eventTime: "08:30", isPublic: true },
     { buildingId, title: "Nettoyage du parking", detail: "Niveau -1 à libérer", eventDate: inDays(29), eventTime: "07:00", isPublic: true },
   ]);
 
-  await db.insert(documents).values([
+  await database.insert(documents).values([
     { buildingId, name: "Règlement d'ordre intérieur", fileType: "PDF", access: "public" },
     { buildingId, name: "Consignes incendie", fileType: "PDF", access: "public" },
     { buildingId, name: "PV Assemblée générale", fileType: "PDF", access: "private" },
   ]);
 
-  const [sample] = await db
+  const [sample] = await database
     .insert(tickets)
     .values({
       reference: `pending-${crypto.randomUUID()}`,
@@ -154,8 +157,8 @@ const seedSampleContent = async (buildingId: number, userId: string) => {
     })
     .returning();
 
-  await db.update(tickets).set({ reference: `T-${1000 + sample.id}` }).where(sql`${tickets.id} = ${sample.id}`);
-  await db.insert(ticketUpdates).values([
+  await database.update(tickets).set({ reference: `T-${1000 + sample.id}` }).where(sql`${tickets.id} = ${sample.id}`);
+  await database.insert(ticketUpdates).values([
     { ticketId: sample.id, label: "Signalé", toStatus: "new", authorLabel: "Exemple de démarrage" },
     { ticketId: sample.id, label: "Rendez-vous confirmé", fromStatus: "new", toStatus: "scheduled", authorLabel: "Exemple de démarrage" },
   ]);
