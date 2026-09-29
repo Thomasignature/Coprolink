@@ -83,6 +83,45 @@ export const personVisibilityPreferences = pgTable("person_visibility_preference
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+/** Assemblées générales de la copropriété. */
+export const generalAssemblies = pgTable("general_assemblies", {
+  id: serial().primaryKey(),
+  buildingId: integer("building_id").notNull().references(() => buildings.id, { onDelete: "cascade" }),
+  title: text().notNull().default("Assemblée générale"),
+  description: text().notNull().default(""),
+  assemblyDate: date("assembly_date").notNull(),
+  assemblyTime: text("assembly_time").notNull().default(""),
+  location: text().notNull().default(""),
+  status: text().notNull().default("scheduled"),
+  createdByUserId: text("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [index("general_assemblies_building_date_idx").on(t.buildingId, t.assemblyDate)]);
+
+export const assemblyAgendaItems = pgTable("assembly_agenda_items", {
+  id: serial().primaryKey(),
+  assemblyId: integer("assembly_id").notNull().references(() => generalAssemblies.id, { onDelete: "cascade" }),
+  position: integer().notNull().default(0),
+  title: text().notNull(),
+  description: text().notNull().default(""),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [index("assembly_agenda_items_assembly_idx").on(t.assemblyId, t.position)]);
+
+export const assemblyResponses = pgTable("assembly_responses", {
+  id: serial().primaryKey(),
+  assemblyId: integer("assembly_id").notNull().references(() => generalAssemblies.id, { onDelete: "cascade" }),
+  personId: integer("person_id").notNull().references(() => buildingPeople.id, { onDelete: "cascade" }),
+  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
+  responseType: text("response_type").notNull().default("present"),
+  proxyName: text("proxy_name").notNull().default(""),
+  note: text().notNull().default(""),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("assembly_responses_assembly_person_idx").on(t.assemblyId, t.personId),
+  index("assembly_responses_assembly_idx").on(t.assemblyId),
+]);
+
 /**
  * E-mails entrants reçus par l'adresse Resend de l'immeuble.
  * Les actions métier proposées par CoproLink restent soumises à validation
