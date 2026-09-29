@@ -81,6 +81,14 @@ export const api = {
   createEvent: (slug, data) =>
     request(`/api/events${buildingQuery(slug)}`, { method: 'POST', body: data }),
 
+  listAssemblies: slug => request(`/api/assemblies${buildingQuery(slug)}`),
+  createAssembly: (slug, data) =>
+    request(`/api/assemblies${buildingQuery(slug)}`, { method: 'POST', body: { action: 'create_assembly', ...data } }),
+  addAssemblyAgendaItem: (slug, data) =>
+    request(`/api/assemblies${buildingQuery(slug)}`, { method: 'POST', body: { action: 'add_agenda_item', ...data } }),
+  respondToAssembly: (slug, data) =>
+    request(`/api/assemblies${buildingQuery(slug)}`, { method: 'POST', body: { action: 'respond', ...data } }),
+
   listTerminals: slug => request(`/api/terminals${buildingQuery(slug)}`),
   createTerminal: (slug, data) =>
     request(`/api/terminals${buildingQuery(slug)}`, { method: 'POST', body: data }),
@@ -111,4 +119,6 @@ export const api = {
       body: data,
       extraHeaders: setupToken ? { 'x-setup-token': setupToken } : undefined,
     }),
+  createManagedBuilding: data =>
+    request('/api/setup', { method: 'POST', body: { ...data, withSampleData: false } }),
 }
