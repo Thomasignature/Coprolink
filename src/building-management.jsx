@@ -9,6 +9,7 @@ import { apiV3 } from './api-v3.js'
 import { ErrorPanel, Logo, Spinner } from './views.jsx'
 import PersonAccessControl from './person-access-control.jsx'
 import SyndicAssembliesPanel from './syndic-assemblies.jsx'
+import OnboardingImport from './onboarding-import.jsx'
 import './building-management.css'
 
 const RELATION_PRESETS = {
@@ -55,6 +56,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const [section, setSection] = useState('overview')
   const [query, setQuery] = useState('')
   const [showAdd, setShowAdd] = useState(false)
+  const [showImport, setShowImport] = useState(false)
   const [actionError, setActionError] = useState('')
   const [draft, setDraft] = useState({
     fullName: '', email: '', unitLabel: '', floor: '', relationPreset: 'owner_occupant',
@@ -283,7 +285,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
 
         {section === 'people' && (
           <div className="bm-content">
-            <div className="bm-page-head"><div><span>PERSONNES & ACCÈS</span><h2>Résidents, lots, rôles et accès CoproLink</h2><p>{isSyndicOperator ? 'Le syndic alimente les lots, personnes et accès. Les référents assurent la continuité et la gouvernance de l’immeuble.' : 'Vue de gouvernance : vous pouvez contrôler les personnes, lots et accès renseignés par le syndic. Les modifications administratives restent réservées au syndic.'}</p></div>{isSyndicOperator && <button className="bm-primary" onClick={() => setShowAdd(value => !value)}><Plus /> Ajouter une personne</button>}</div>
+            <div className="bm-page-head"><div><span>PERSONNES & ACCÈS</span><h2>Résidents, lots, rôles et accès CoproLink</h2><p>{isSyndicOperator ? 'Le syndic alimente les lots, personnes et accès. Les référents assurent la continuité et la gouvernance de l’immeuble.' : 'Vue de gouvernance : vous pouvez contrôler les personnes, lots et accès renseignés par le syndic. Les modifications administratives restent réservées au syndic.'}</p></div>{isSyndicOperator && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button className="bm-primary" onClick={() => setShowImport(true)}><FileText /> Importer CSV</button><button className="bm-primary" onClick={() => setShowAdd(value => !value)}><Plus /> Ajouter une personne</button></div>}</div>
             <section className="bm-role-explainer"><article><UserCog /><h3>{referentPeople.length} référent{referentPeople.length > 1 ? 's' : ''}</h3><p>Les référents suivent la gouvernance et assurent la continuité de CoproLink pour l’immeuble.</p></article><article><Users /><h3>{people.length} personne{people.length > 1 ? 's' : ''}</h3><p>Copropriétaires, occupants et locataires sont reliés à leurs lots.</p></article><article><Wrench /><h3>{professionals.length} professionnel{professionals.length > 1 ? 's' : ''}</h3><p>Le syndic et les prestataires restent séparés des résidents.</p></article></section>
 
             <div className="bm-directory-tools"><label><Search /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Rechercher un nom, un lot, un étage…" /></label><span>{directoryEntries.length} entrée{directoryEntries.length > 1 ? 's' : ''}</span></div>
@@ -330,6 +332,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
           </div>
         )}
       </section>
+      {showImport && isSyndicOperator && <OnboardingImport buildingSlug={slug} onClose={() => setShowImport(false)} onImported={load} />}
     </main>
   )
 }
