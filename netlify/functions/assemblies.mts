@@ -1,5 +1,5 @@
 import type { Config } from "@netlify/functions";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import {
   assemblyAgendaItems, assemblyResponses, buildingPeople, generalAssemblies,
@@ -9,6 +9,57 @@ import { readString, writeAudit } from "../lib/data.mts";
 
 const RESPONSE_TYPES = ["present", "absent", "proxy"] as const;
 type ResponseType = (typeof RESPONSE_TYPES)[number];
+
+/**
+ * Les Deploy Previews Netlify peuvent être disponibles avant l'application d'une
+ * nouvelle migration de branche. Ce garde-fou idempotent maintient l'AG testable
+ * sans toucher aux données existantes. La migration reste la source de vérité
+ * pour staging/production.
+ */
+const ensureAssemblyTables = async () => {
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS general_assemblies (
+      id serial PRIMARY KEY,
+      building_id integer NOT NULL REFERENCES buildings(id) ON DELETE CASCADE,
+      title text NOT NULL DEFAULT 'Assemblée générale',
+      description text NOT NULL DEFAULT '',
+      assembly_date date NOT NULL,
+      assembly_time text NOT NULL DEFAULT '',
+      location text NOT NULL DEFAULT '',
+      status text NOT NULL DEFAULT 'scheduled',
+      created_by_user_id text REFERENCES users(id) ON DELETE SET NULL,
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS general_assemblies_building_date_idx ON general_assemblies(building_id, assembly_date)`);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS assembly_agenda_items (
+      id serial PRIMARY KEY,
+      assembly_id integer NOT NULL REFERENCES general_assemblies(id) ON DELETE CASCADE,
+      position integer NOT NULL DEFAULT 0,
+      title text NOT NULL,
+      description text NOT NULL DEFAULT '',
+      created_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS assembly_agenda_items_assembly_idx ON assembly_agenda_items(assembly_id, position)`);
+  await db.execute(sql`
+    CREATE TABLE IF NOT EXISTS assembly_responses (
+      id serial PRIMARY KEY,
+      assembly_id integer NOT NULL REFERENCES general_assemblies(id) ON DELETE CASCADE,
+      person_id integer NOT NULL REFERENCES building_people(id) ON DELETE CASCADE,
+      user_id text REFERENCES users(id) ON DELETE SET NULL,
+      response_type text NOT NULL DEFAULT 'present',
+      proxy_name text NOT NULL DEFAULT '',
+      note text NOT NULL DEFAULT '',
+      created_at timestamp NOT NULL DEFAULT now(),
+      updated_at timestamp NOT NULL DEFAULT now()
+    )
+  `);
+  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS assembly_responses_assembly_person_idx ON assembly_responses(assembly_id, person_id)`);
+  await db.execute(sql`CREATE INDEX IF NOT EXISTS assembly_responses_assembly_idx ON assembly_responses(assembly_id)`);
+};
 
 const readPositiveId = (value: unknown, label: string) => {
   const id = Number(value);
@@ -72,6 +123,7 @@ const loadAssemblies = async (buildingId: number, userId: string | null) => {
 
 export default async (req: Request) => {
   try {
+    await ensureAssemblyTables();
     const buildingSlug = readBuildingSlug(req);
     const ctx = await authorize(req, { buildingSlug, require: "building:read" });
     if (ctx.principal.kind !== "user") throw new HttpError(403, "Compte utilisateur requis");
