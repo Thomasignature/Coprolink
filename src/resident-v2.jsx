@@ -6,6 +6,7 @@ import {
 import { Logo } from './views.jsx'
 import { longDate, metaFor } from './format.js'
 import ResidentLotView from './resident-lot.jsx'
+import AssemblyPanel from './assembly-panel.jsx'
 import './resident-mobile.css'
 
 export default function ResidentV2View({ data, session, onReport, onLogout, setToast, previewRole = null, readOnly = false }) {
@@ -18,6 +19,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
   const events = Array.isArray(data.events) ? data.events : []
   const announcements = Array.isArray(data.announcements) ? data.announcements : []
   const documents = Array.isArray(data.documents) ? data.documents : []
+  const professionals = Array.isArray(data.professionals) ? data.professionals : []
   const residentLabel = previewRole === 'tenant' ? 'Locataire / occupant' : 'Copropriétaire'
 
   const openReport = () => {
@@ -67,6 +69,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
           <button className={section === 'overview' ? 'active' : ''} onClick={() => setSection('overview')}><Home /> Accueil</button>
           <button className={section === 'tickets' ? 'active' : ''} onClick={() => setSection('tickets')}><Megaphone /> Signalements{ownOpen.length > 0 && <b>{ownOpen.length}</b>}</button>
           <button className={section === 'documents' ? 'active' : ''} onClick={() => setSection('documents')}><FileText /> Documents</button>
+          <button className={section === 'assemblies' ? 'active' : ''} onClick={() => setSection('assemblies')}><CalendarDays /> Assemblées générales</button>
           <button className={section === 'lot' ? 'active' : ''} onClick={() => setSection('lot')}><Building2 /> Mon lot</button>
           <button className={section === 'building' ? 'active' : ''} onClick={() => setSection('building')}><Building2 /> Mon immeuble</button>
         </nav>
@@ -115,6 +118,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
               <div className="rm-action-grid">
                 <button className="rm-action" onClick={openReport}><span><Megaphone /></span><strong>Signaler</strong><small>{readOnly ? 'Disponible hors prévisualisation' : 'Un problème dans l’immeuble'}</small></button>
                 <button className="rm-action" onClick={() => setSection('documents')}><span><FileText /></span><strong>Documents</strong><small>Retrouver les documents utiles</small></button>
+                <button className="rm-action" onClick={() => setSection('assemblies')}><span><CalendarDays /></span><strong>Assemblée générale</strong><small>Présence, procuration et ordre du jour</small></button>
                 <button className="rm-action" onClick={() => setSection('lot')}><span><Building2 /></span><strong>Mon lot</strong><small>Mon logement et mes informations</small></button>
               </div>
             </section>
@@ -168,10 +172,17 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
                 ? <div className="rm-empty"><FileText /><strong>Aucun document accessible</strong><span>Les documents disponibles pour ce profil apparaîtront ici.</span></div>
                 : documents.map(doc => (
                   <button className="rm-doc" key={doc.id} onClick={() => setToast(doc.available ? 'Ouverture du document bientôt disponible' : 'Le stockage du fichier n’est pas encore activé')}>
-                    <FileText /><div><strong>{doc.name}</strong><small>Mis à jour le {longDate(doc.updatedOn)}</small></div><ChevronRight />
+                    <FileText /><div><strong>{doc.name}</strong><small>{doc.folder ? `${doc.folder} · ` : ''}Mis à jour le {longDate(doc.updatedOn)}</small></div><ChevronRight />
                   </button>
                 ))}
             </div>
+          </div>
+        )}
+
+        {section === 'assemblies' && (
+          <div className="rm-content">
+            <div className="rm-page-head"><span>ASSEMBLÉES GÉNÉRALES</span><h1>Participer simplement</h1><p>Consultez les informations de l’AG, l’ordre du jour et indiquez votre présence ou votre procuration.</p></div>
+            <AssemblyPanel buildingSlug={data.building.slug} readOnly={readOnly} setToast={setToast} />
           </div>
         )}
 
@@ -189,6 +200,10 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
             <section className="rm-info-card" style={{ marginTop: 12 }}>
               <strong style={{ fontSize: 12 }}>Informations utiles</strong>
               <p style={{ fontSize: 10, color: '#748079' }}><strong>Numéro d’urgence :</strong> {data.building.emergencyPhone || 'Non renseigné'}</p>
+              {professionals.length > 0 && <div style={{ marginTop: 12 }}>
+                <strong style={{ fontSize: 11 }}>Contacts de l’immeuble</strong>
+                {professionals.map(pro => <div key={pro.id} style={{ marginTop: 8, paddingTop: 8, borderTop: '1px solid #eef1ef' }}><strong style={{ fontSize: 10 }}>{pro.organizationName || pro.contactName || 'Intervenant'}</strong><p style={{ fontSize: 10, color: '#748079', margin: '3px 0' }}>{pro.professionalType === 'syndic' ? 'Syndic' : 'Professionnel'}{pro.phone ? ` · ${pro.phone}` : ''}{pro.email ? ` · ${pro.email}` : ''}</p></div>)}
+              </div>}
               {latestAnnouncement && <div style={{ marginTop: 12 }}><strong style={{ fontSize: 11 }}>{latestAnnouncement.title}</strong><p style={{ fontSize: 10, color: '#748079', lineHeight: 1.5 }}>{latestAnnouncement.body}</p></div>}
             </section>
           </div>
