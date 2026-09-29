@@ -216,6 +216,13 @@ export default async (req: Request, context: Context) => {
         return Response.json({ pendingId: pending.id, email, role: pending.role, unitLabel: pending.unitLabel, pending: true, invited: false, message: pendingNotice(email) }, { status: 202 });
       }
 
+      // Une réinvitation ne doit pas retirer, par effet de bord, le dernier syndic de l'immeuble.
+      const [existingMember] = await db.select().from(buildingMembers)
+        .where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.userId, account.id))).limit(1);
+      if (existingMember?.role === "manager" && role !== "manager" && (await countManagers(ctx.buildingId, existingMember.id)) === 0) {
+        throw new HttpError(409, "Impossible de retirer le dernier gestionnaire de l'immeuble");
+      }
+
       await mirrorAccount(account, email, fullName);
       const member = await grantMembership(ctx.buildingId, email, account, membership);
       await writeAudit(ctx, { action: invited ? "member.invited" : "member.granted", entityType: "building_member", entityId: member.id, summary: invited ? `${email} invité avec le rôle « ${role} ».` : `Accès « ${role} » accordé à ${email}.` });

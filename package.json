@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@netlify/blobs": "^11.1.1",
     "@netlify/database": "^1.1.0",
     "@netlify/identity": "2.0.0",
     "@vitejs/plugin-react": "latest",

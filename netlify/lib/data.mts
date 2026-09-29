@@ -37,6 +37,39 @@ export const readString = (value: unknown, field: string, { max = 500, required 
   return value.trim().slice(0, max);
 };
 
+const EMAIL_PATTERN = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]{2,}$/;
+
+/** E-mail facultatif, normalisé en minuscules. Une valeur non vide doit être valide. */
+export const readOptionalEmail = (value: unknown, field = "e-mail") => {
+  const email = readString(value, field, { max: 200, required: false }).toLowerCase();
+  if (email && !EMAIL_PATTERN.test(email)) throw new HttpError(422, `Adresse ${field} invalide`);
+  return email;
+};
+
+/** Date facultative au format AAAA-MM-JJ ; `null` si absente. */
+export const readOptionalDate = (value: unknown, field: string) => {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(value))) {
+    throw new HttpError(422, `Date « ${field} » invalide (AAAA-MM-JJ attendu)`);
+  }
+  return value;
+};
+
+/**
+ * Traduit une violation d'unicité Postgres (23505) en 409 lisible au lieu d'une
+ * erreur interne. Les autres erreurs sont relancées telles quelles.
+ */
+export const conflictOnDuplicate = async <T,>(operation: () => Promise<T>, message: string): Promise<T> => {
+  try {
+    return await operation();
+  } catch (error) {
+    const code = (error as { code?: string; cause?: { code?: string } } | null)?.code
+      ?? (error as { cause?: { code?: string } } | null)?.cause?.code;
+    if (code === "23505") throw new HttpError(409, message);
+    throw error;
+  }
+};
+
 /** Journal d'audit. Append-only : c'est la mémoire de l'immeuble. */
 export const writeAudit = async (
   ctx: AuthContext,

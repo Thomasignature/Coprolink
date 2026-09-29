@@ -131,8 +131,9 @@ export default async (req: Request) => {
           name: d.name,
           fileType: d.fileType,
           access: d.access,
+          folder: d.folder,
           updatedOn: d.updatedOn,
-          // Le contenu binaire n'est pas encore stocké (Netlify Blobs à venir).
+          // Fichier stocké dans Netlify Blobs, servi par /api/documents/:id.
           available: d.storageKey !== null,
         })),
         activity: activity.map((a) => ({
