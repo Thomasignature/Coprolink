@@ -117,7 +117,10 @@ export default async (req: Request) => {
 
     await mirrorAccount(account, email, person.fullName);
     await db.insert(buildingMembers).values({ buildingId: ctx.buildingId, userId: account.id, ...membership })
-      .onConflictDoUpdate({ target: [buildingMembers.buildingId, buildingMembers.userId], set: membership });
+      .onConflictDoUpdate({
+        target: [buildingMembers.buildingId, buildingMembers.userId],
+        set: { ...membership, endedAt: null, endedReason: "" },
+      });
     await linkBuildingPersonAccount(ctx.buildingId, email, account.id);
 
     await writeAudit(ctx, {

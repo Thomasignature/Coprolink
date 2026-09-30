@@ -167,8 +167,10 @@ export default async (req: Request) => {
     }
 
     if (action === "respond") {
+      if (!ctx.can("assemblies:respond")) throw new HttpError(403, "La participation à l’AG est réservée aux copropriétaires actifs");
       const assemblyId = readPositiveId(body.assemblyId, "assemblée");
-      await getAssembly(ctx.buildingId, assemblyId);
+      const assembly = await getAssembly(ctx.buildingId, assemblyId);
+      if (assembly.archivedAt || assembly.status === "archived") throw new HttpError(409, "Cette assemblée est archivée");
       const [person] = await db.select().from(buildingPeople)
         .where(and(eq(buildingPeople.buildingId, ctx.buildingId), eq(buildingPeople.userId, ctx.principal.userId))).limit(1);
       if (!person) throw new HttpError(422, "Votre compte n’est pas encore lié à une personne de l’immeuble");
@@ -189,6 +191,16 @@ export default async (req: Request) => {
       }).returning();
       await writeAudit(ctx, { action: "assembly.response.updated", entityType: "assembly_response", entityId: saved.id, summary: `${person.fullName} a répondu à l’assemblée (${responseType}).` });
       return Response.json(saved, { status: 201 });
+    }
+
+    if (action === "archive_assembly") {
+      const syndic = await authorizeSyndicOperator(req, buildingSlug);
+      const assemblyId = readPositiveId(body.assemblyId, "assemblée");
+      await getAssembly(syndic.buildingId, assemblyId);
+      const [archived] = await db.update(generalAssemblies).set({ status: "archived", archivedAt: new Date(), updatedAt: new Date() })
+        .where(and(eq(generalAssemblies.id, assemblyId), eq(generalAssemblies.buildingId, syndic.buildingId))).returning();
+      await writeAudit(syndic, { action: "assembly.archived", entityType: "general_assembly", entityId: assemblyId, summary: `${archived.title} archivée sans suppression de son historique.` });
+      return Response.json(archived);
     }
 
     throw new HttpError(422, "Action d’assemblée inconnue");

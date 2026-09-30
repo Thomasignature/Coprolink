@@ -1,8 +1,8 @@
 import type { Config } from "@netlify/functions";
-import { sql } from "drizzle-orm";
+import { and, eq, gt, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import {
-  announcements, buildingMembers, buildings, documents, events, tickets, ticketUpdates,
+  announcements, auditLog, buildingMembers, buildings, documents, events, syndicOnboardingInvites, tickets, ticketUpdates,
 } from "../../db/schema.js";
 import { buildingProfessionals } from "../../db/schema-v3.js";
 import { HttpError, jsonError, listMemberships, requireUser } from "../lib/auth.mts";
@@ -35,6 +35,11 @@ export default async (req: Request) => {
 
     const memberships = await listMemberships(principal.userId);
     const isSyndicOperator = memberships.some((membership) => membership.role === "manager");
+    const [onboardingInvite] = await db.select().from(syndicOnboardingInvites).where(and(
+      sql`lower(${syndicOnboardingInvites.email}) = ${principal.email.trim().toLowerCase()}`,
+      isNull(syndicOnboardingInvites.acceptedAt),
+      gt(syndicOnboardingInvites.expiresAt, new Date()),
+    )).limit(1);
     const expectedSetupToken = Netlify.env.get("COPROLINK_SETUP_TOKEN");
 
     const [{ count }] = await db.select({ count: sql<number>`count(*)::int` }).from(buildings);
@@ -43,7 +48,7 @@ export default async (req: Request) => {
     // Un syndic déjà rattaché à CoproLink peut onboarder d'autres immeubles de
     // son portefeuille sans jeton technique. Le jeton reste un mécanisme
     // d'amorçage pour un compte sans portefeuille existant.
-    if (!principal.isPlatformAdmin && !isSyndicOperator) {
+    if (!principal.isPlatformAdmin && !isSyndicOperator && !onboardingInvite) {
       if (expectedSetupToken) {
         const provided = req.headers.get("x-setup-token") ?? "";
         if (provided !== expectedSetupToken) throw new HttpError(403, "Jeton d'amorçage invalide");
@@ -87,6 +92,7 @@ export default async (req: Request) => {
       if (managerName) {
         await tx.insert(buildingProfessionals).values({
           buildingId: created.id,
+          userId: principal.userId,
           professionalType: "syndic",
           organizationName: managerName,
           contactName: principal.fullName || "",
@@ -95,6 +101,17 @@ export default async (req: Request) => {
       }
 
       if (withSampleData) await seedSampleContent(tx, created.id, principal.userId);
+      if (onboardingInvite) await tx.update(syndicOnboardingInvites).set({ acceptedAt: new Date() }).where(eq(syndicOnboardingInvites.id, onboardingInvite.id));
+      await tx.insert(auditLog).values({
+        buildingId: created.id,
+        actorUserId: principal.userId,
+        actorLabel: principal.fullName || principal.email,
+        actorRole: "manager",
+        action: "building.created",
+        entityType: "building",
+        entityId: String(created.id),
+        summary: `${created.name} créée avec son premier mandat syndic.`,
+      });
       return created;
     });
 

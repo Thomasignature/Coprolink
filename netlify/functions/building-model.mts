@@ -1,13 +1,15 @@
 import type { Config } from "@netlify/functions";
-import { and, asc, eq, isNull } from "drizzle-orm";
+import { and, asc, count, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
+import { buildingMembers } from "../../db/schema.js";
 import {
-  buildingPeople, buildingProfessionals, buildingReferents, buildingUnits,
+  assemblyResponses, buildingPeople, buildingProfessionals, buildingReferents, buildingUnits,
   personVisibilityPreferences, PROFESSIONAL_TYPES, RELATION_TYPES, unitPersonRelations,
   type ProfessionalType, type RelationType,
 } from "../../db/schema-v3.js";
 import { authorizeCoproLinkAdmin, authorizeSyndicOperator, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import { readString, writeAudit } from "../lib/data.mts";
+import { canPermanentlyDeletePerson, isIsoDate, readEndReason, shouldRevokeBuildingAccess } from "../lib/lifecycle-policy.mts";
 
 const readId = (value: unknown, field = "id") => {
   const id = Number(value);
@@ -45,12 +47,13 @@ const readModel = async (buildingId: number) => {
     shareLabel: unitPersonRelations.shareLabel,
     startDate: unitPersonRelations.startDate,
     endDate: unitPersonRelations.endDate,
+    endReason: unitPersonRelations.endReason,
   }).from(unitPersonRelations)
     .innerJoin(buildingUnits, eq(unitPersonRelations.unitId, buildingUnits.id))
     .where(eq(buildingUnits.buildingId, buildingId));
 
   const referents = await db.select().from(buildingReferents)
-    .where(and(eq(buildingReferents.buildingId, buildingId), isNull(buildingReferents.endedAt)));
+    .where(eq(buildingReferents.buildingId, buildingId));
 
   const professionals = await db.select().from(buildingProfessionals)
     .where(eq(buildingProfessionals.buildingId, buildingId))
@@ -219,11 +222,41 @@ export default async (req: Request) => {
         const [relation] = await db.select().from(unitPersonRelations).where(eq(unitPersonRelations.id, id)).limit(1);
         if (!relation) throw new HttpError(404, "Lien introuvable");
         await assertUnitInBuilding(ctx.buildingId, relation.unitId);
-        const [updated] = await db.update(unitPersonRelations).set({
+        const ending = body.endDate !== undefined && body.endDate !== null && body.endDate !== "";
+        if (ending && !isIsoDate(body.endDate)) throw new HttpError(422, "Date de fin invalide");
+        let endReason = "";
+        if (ending) {
+          try { endReason = readEndReason(body.endReason); } catch { throw new HttpError(422, "Motif de fin invalide"); }
+        }
+        const [updated] = await db.transaction(async (tx) => {
+          const [result] = await tx.update(unitPersonRelations).set({
           ...(body.relationType !== undefined ? { relationType: assertRelationType(body.relationType) } : {}),
           ...(body.shareLabel !== undefined ? { shareLabel: optionalString(body.shareLabel, "quotité", 40) } : {}),
-          ...(body.endDate !== undefined ? { endDate: typeof body.endDate === "string" && body.endDate ? body.endDate : null } : {}),
-        }).where(eq(unitPersonRelations.id, id)).returning();
+          ...(body.endDate !== undefined ? { endDate: ending ? body.endDate : null, endReason: ending ? endReason : "" } : {}),
+          }).where(eq(unitPersonRelations.id, id)).returning();
+
+          if (ending) {
+            const [{ value: activeRelations }] = await tx.select({ value: count() }).from(unitPersonRelations)
+              .innerJoin(buildingUnits, eq(unitPersonRelations.unitId, buildingUnits.id))
+              .where(and(
+                eq(unitPersonRelations.personId, relation.personId),
+                eq(buildingUnits.buildingId, ctx.buildingId),
+                isNull(unitPersonRelations.endDate),
+              ));
+            const person = await assertPersonInBuilding(ctx.buildingId, relation.personId);
+            if (person.userId && shouldRevokeBuildingAccess(activeRelations)) {
+              await tx.update(buildingMembers).set({ endedAt: new Date(), endedReason: endReason })
+                .where(and(
+                  eq(buildingMembers.buildingId, ctx.buildingId),
+                  eq(buildingMembers.userId, person.userId),
+                  eq(buildingMembers.role, "resident"),
+                  isNull(buildingMembers.endedAt),
+                ));
+            }
+          }
+          return [result];
+        });
+        if (ending) await writeAudit(ctx, { action: "person_relation.ended", entityType: "unit_person_relation", entityId: id, summary: `Relation terminée le ${body.endDate}.` });
         return Response.json(updated);
       }
 
@@ -242,7 +275,10 @@ export default async (req: Request) => {
         const [existing] = await db.select().from(buildingProfessionals)
           .where(and(eq(buildingProfessionals.id, id), eq(buildingProfessionals.buildingId, ctx.buildingId))).limit(1);
         if (!existing) throw new HttpError(404, "Professionnel introuvable");
-        const [updated] = await db.update(buildingProfessionals).set({
+        const endingSyndic = existing.professionalType === "syndic" && body.endedAt !== undefined && body.endedAt !== null && body.endedAt !== "";
+        if (endingSyndic && !isIsoDate(body.endedAt)) throw new HttpError(422, "Date de fin de mandat invalide");
+        const [updated] = await db.transaction(async (tx) => {
+          const [result] = await tx.update(buildingProfessionals).set({
           ...(body.professionalType !== undefined ? { professionalType: assertProfessionalType(body.professionalType) } : {}),
           ...(body.organizationName !== undefined ? { organizationName: optionalString(body.organizationName, "organisation", 160) } : {}),
           ...(body.contactName !== undefined ? { contactName: optionalString(body.contactName, "contact", 120) } : {}),
@@ -250,7 +286,15 @@ export default async (req: Request) => {
           ...(body.phone !== undefined ? { phone: optionalString(body.phone, "téléphone", 40) } : {}),
           ...(body.isActive !== undefined ? { isActive: body.isActive === true } : {}),
           ...(body.endedAt !== undefined ? { endedAt: typeof body.endedAt === "string" && body.endedAt ? body.endedAt : null } : {}),
-        }).where(eq(buildingProfessionals.id, id)).returning();
+          ...(endingSyndic ? { endReason: optionalString(body.endReason, "motif", 200), isActive: false } : {}),
+          }).where(eq(buildingProfessionals.id, id)).returning();
+          if (endingSyndic && existing.userId) {
+            await tx.update(buildingMembers).set({ endedAt: new Date(`${body.endedAt}T12:00:00Z`), endedReason: optionalString(body.endReason, "motif", 200) })
+              .where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.userId, existing.userId), eq(buildingMembers.role, "manager"), isNull(buildingMembers.endedAt)));
+          }
+          return [result];
+        });
+        if (endingSyndic) await writeAudit(ctx, { action: "syndic.mandate_ended", entityType: "building_professional", entityId: id, summary: `Mandat syndic terminé le ${body.endedAt}.` });
         return Response.json(updated);
       }
 
@@ -260,15 +304,28 @@ export default async (req: Request) => {
     if (req.method === "DELETE") {
       if (entity === "unit") {
         await assertUnitInBuilding(ctx.buildingId, id);
+        const [{ value: relations }] = await db.select({ value: count() }).from(unitPersonRelations).where(eq(unitPersonRelations.unitId, id));
+        if (relations > 0) throw new HttpError(409, "Ce lot possède un historique et ne peut pas être supprimé.");
         await db.delete(buildingUnits).where(and(eq(buildingUnits.id, id), eq(buildingUnits.buildingId, ctx.buildingId)));
       } else if (entity === "person") {
-        await assertPersonInBuilding(ctx.buildingId, id);
+        const person = await assertPersonInBuilding(ctx.buildingId, id);
+        const [[{ value: relations }], [{ value: referents }], [{ value: responses }], [{ value: activeAccess }]] = await Promise.all([
+          db.select({ value: count() }).from(unitPersonRelations).where(eq(unitPersonRelations.personId, id)),
+          db.select({ value: count() }).from(buildingReferents).where(eq(buildingReferents.personId, id)),
+          db.select({ value: count() }).from(assemblyResponses).where(eq(assemblyResponses.personId, id)),
+          person.userId
+            ? db.select({ value: count() }).from(buildingMembers).where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.userId, person.userId), isNull(buildingMembers.endedAt)))
+            : Promise.resolve([{ value: 0 }]),
+        ]);
+        if (!canPermanentlyDeletePerson({ relations, referents, assemblyResponses: responses, activeAccess })) {
+          throw new HttpError(409, "Cette personne possède un historique. Mettez plutôt fin à sa relation.");
+        }
         await db.delete(buildingPeople).where(and(eq(buildingPeople.id, id), eq(buildingPeople.buildingId, ctx.buildingId)));
       } else if (entity === "relation") {
         const [relation] = await db.select().from(unitPersonRelations).where(eq(unitPersonRelations.id, id)).limit(1);
         if (!relation) throw new HttpError(404, "Lien introuvable");
         await assertUnitInBuilding(ctx.buildingId, relation.unitId);
-        await db.delete(unitPersonRelations).where(eq(unitPersonRelations.id, id));
+        throw new HttpError(409, "Une relation historique ne peut pas être supprimée. Indiquez une date et un motif de fin.");
       } else if (entity === "referent") {
         await db.update(buildingReferents).set({ endedAt: new Date() })
           .where(and(eq(buildingReferents.id, id), eq(buildingReferents.buildingId, ctx.buildingId)));

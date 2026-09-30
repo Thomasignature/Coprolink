@@ -16,7 +16,7 @@ export default async (req: Request, context: Context) => {
     const [document] = await db.select().from(documents)
       .where(and(eq(documents.id, id), eq(documents.buildingId, ctx.buildingId))).limit(1);
     if (!document) throw new HttpError(404, "Document introuvable");
-    if (!mayReadDocument(document.access, ctx.can("documents:read:private"))) {
+    if (!mayReadDocument(document.access, ctx.can("documents:read:private"), ctx.can("documents:read:owners"))) {
       throw new HttpError(403, "Vous n’avez pas accès à ce document");
     }
     if (!document.storageKey) throw new HttpError(404, "Le fichier n’a pas encore été déposé");
