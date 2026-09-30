@@ -207,6 +207,8 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
     [memberships, requested],
   )
   const slug = membership.buildingSlug
+  const residentSection = route.path.startsWith('resident/') ? route.path.slice('resident/'.length) : 'overview'
+  const navigateResident = section => go(`/resident${section === 'overview' ? '' : `/${section}`}?building=${encodeURIComponent(slug)}`)
 
   const [workspace, setWorkspace] = useState({ status: 'loading', data: null, error: null })
 
@@ -278,7 +280,7 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
   return (
     <ResidentV2View
       data={workspaceData} session={session} setToast={setToast} onLogout={onLogout}
-      onReport={actions.createTicket}
+      onReport={actions.createTicket} initialSection={residentSection} onNavigate={navigateResident}
     />
   )
 }

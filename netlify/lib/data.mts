@@ -61,7 +61,7 @@ export const writeAudit = async (
  */
 export const createTicket = async (
   ctx: AuthContext,
-  input: { title: string; category: string; location: string; description: string; isPublic: boolean },
+  input: { title: string; category: string; location: string; description: string; priority: string; isPublic: boolean },
 ) => {
   const placeholder = `pending-${crypto.randomUUID()}`;
   const [inserted] = await db
@@ -73,6 +73,7 @@ export const createTicket = async (
       category: input.category,
       location: input.location,
       description: input.description,
+      priority: input.priority,
       status: "new",
       isPublic: input.isPublic,
       reporterLabel: ctx.actorLabel,
@@ -184,6 +185,7 @@ export const serializeTicket = (row: TicketRow, timeline: Timeline = []) => ({
   category: row.category,
   location: row.location,
   description: row.description,
+  priority: row.priority,
   status: row.status,
   isPublic: row.isPublic,
   reporterLabel: row.reporterLabel,
@@ -205,6 +207,7 @@ export const serializePublicTicket = (row: TicketRow, timeline: Timeline = []) =
   title: row.title,
   category: row.category,
   location: row.location,
+  priority: row.priority,
   status: row.status,
   nextStep: row.nextStep,
   createdAt: row.createdAt.toISOString(),
