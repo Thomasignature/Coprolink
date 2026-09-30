@@ -78,6 +78,7 @@ export const tickets = pgTable("tickets", {
   category: text().notNull().default("Autre"),
   location: text().notNull().default(""),
   description: text().notNull().default(""),
+  priority: text().notNull().default("normal"),
   status: text().notNull().default("new"),
   isPublic: boolean("is_public").notNull().default(true),
   reporterLabel: text("reporter_label").notNull().default(""),

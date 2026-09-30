@@ -58,6 +58,9 @@ async function request(path, { method = 'GET', body, terminal = false, extraHead
 
 const buildingQuery = slug => (slug ? `?building=${encodeURIComponent(slug)}` : '')
 
+export const documentDownloadUrl = (slug, id) =>
+  `/api/documents/${encodeURIComponent(id)}${buildingQuery(slug)}`
+
 export const api = {
   session: () => request('/api/session'),
   terminalSession: () => request('/api/session', { terminal: true }),
