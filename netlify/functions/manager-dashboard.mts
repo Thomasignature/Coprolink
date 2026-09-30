@@ -36,7 +36,10 @@ export default async (req: Request) => {
 
     if (buildingRows.length === 0) {
       return Response.json(
-        { summary: { buildings: 0, attention: 0, upcoming: 0, openTickets: 0 }, buildings: [], priority: [], upcoming: [], activity: [] },
+        {
+          summary: { buildings: 0, attention: 0, upcoming: 0, openTickets: 0 },
+          buildings: [], tickets: [], documents: [], events: [], priority: [], upcoming: [], activity: [],
+        },
         { headers: { "cache-control": "no-store" } },
       );
     }
@@ -45,7 +48,7 @@ export default async (req: Request) => {
     const [ticketRows, eventRows, documentRows, activityRows] = await Promise.all([
       db.select().from(tickets).where(inArray(tickets.buildingId, ids)).orderBy(desc(tickets.updatedAt)),
       db.select().from(events).where(inArray(events.buildingId, ids)).orderBy(events.eventDate),
-      db.select().from(documents).where(inArray(documents.buildingId, ids)),
+      db.select().from(documents).where(inArray(documents.buildingId, ids)).orderBy(desc(documents.updatedOn)),
       db.select().from(auditLog).where(inArray(auditLog.buildingId, ids)).orderBy(desc(auditLog.createdAt)).limit(30),
     ]);
 
@@ -79,33 +82,30 @@ export default async (req: Request) => {
       };
     });
 
-    const priorityTickets = ticketRows
+    const allTickets = ticketRows.map((ticket) => ({
+      id: ticket.id,
+      reference: ticket.reference,
+      buildingId: ticket.buildingId,
+      buildingSlug: buildingMap.get(ticket.buildingId)?.slug ?? "",
+      buildingName: buildingMap.get(ticket.buildingId)?.name ?? "",
+      title: ticket.title,
+      location: ticket.location,
+      status: ticket.status,
+      nextStep: ticket.nextStep,
+      updatedAt: ticket.updatedAt.toISOString(),
+    }));
+
+    const priorityTickets = allTickets
       .filter((ticket) => isOpen(ticket.status))
       .sort((a, b) => {
         const rank = (status: string) => status === "new" ? 0 : status === "waiting" ? 1 : status === "scheduled" ? 2 : 3;
         return rank(a.status) - rank(b.status) || toTime(b.updatedAt) - toTime(a.updatedAt);
       })
       .slice(0, 6)
-      .map((ticket) => ({
-        type: "ticket",
-        id: ticket.id,
-        reference: ticket.reference,
-        buildingId: ticket.buildingId,
-        buildingSlug: buildingMap.get(ticket.buildingId)?.slug ?? "",
-        buildingName: buildingMap.get(ticket.buildingId)?.name ?? "",
-        title: ticket.title,
-        location: ticket.location,
-        status: ticket.status,
-        nextStep: ticket.nextStep,
-        updatedAt: ticket.updatedAt.toISOString(),
-      }));
+      .map((ticket) => ({ ...ticket, type: "ticket" }));
 
-    const upcoming = eventRows
-      .filter((event) => {
-        const time = toTime(event.eventDate);
-        return time >= now - 24 * 60 * 60 * 1000 && time <= now + 60 * 24 * 60 * 60 * 1000;
-      })
-      .slice(0, 8)
+    const futureEvents = eventRows
+      .filter((event) => toTime(event.eventDate) >= now - 24 * 60 * 60 * 1000)
       .map((event) => ({
         id: event.id,
         buildingId: event.buildingId,
@@ -115,7 +115,22 @@ export default async (req: Request) => {
         detail: event.detail,
         eventDate: event.eventDate,
         eventTime: event.eventTime,
+        isPublic: event.isPublic,
       }));
+
+    const upcoming = futureEvents.filter((event) => toTime(event.eventDate) <= now + 60 * 24 * 60 * 60 * 1000).slice(0, 8);
+
+    const allDocuments = documentRows.map((document) => ({
+      id: document.id,
+      buildingId: document.buildingId,
+      buildingSlug: buildingMap.get(document.buildingId)?.slug ?? "",
+      buildingName: buildingMap.get(document.buildingId)?.name ?? "",
+      name: document.name,
+      fileType: document.fileType,
+      access: document.access,
+      hasFile: Boolean(document.storageKey),
+      updatedOn: document.updatedOn,
+    }));
 
     const activity = activityRows.map((item) => ({
       id: item.id,
@@ -139,6 +154,9 @@ export default async (req: Request) => {
       {
         summary: { buildings: portfolio.length, attention, upcoming: upcomingSoon, openTickets },
         buildings: portfolio,
+        tickets: allTickets,
+        documents: allDocuments,
+        events: futureEvents,
         priority: priorityTickets,
         upcoming,
         activity,

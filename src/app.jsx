@@ -57,6 +57,7 @@ const useToast = () => {
 
 export default function App() {
   const route = useRoute()
+  const routeBuilding = route.params.get('building')
   const [toast, setToast] = useToast()
 
   const [authCallback, setAuthCallback] = useState({ done: false, mode: null, inviteToken: null })
@@ -95,6 +96,14 @@ export default function App() {
   useEffect(() => onAuthChange(event => {
     if (event === 'logout' || event === 'login') loadSession()
   }), [loadSession])
+
+  // Après la création d'une copropriété, le backend rattache immédiatement le
+  // compte au nouvel immeuble. On recharge donc la session lors de l'ouverture
+  // d'un immeuble du portefeuille afin que ce nouveau rôle soit visible sans
+  // devoir se déconnecter/reconnecter.
+  useEffect(() => {
+    if (route.path === 'portfolio' && routeBuilding) loadSession()
+  }, [loadSession, route.path, routeBuilding])
 
   const onLogout = useCallback(async () => {
     try { await logout() } catch { /* session locale purgée quand même */ }
@@ -160,7 +169,14 @@ export default function App() {
   }
 
   const managesBuildings = data.user.isPlatformAdmin || data.memberships.some(m => m.role === 'manager')
+  const isBuildingReferent = data.memberships.some(m => m.isReferent === true)
   const wantsPortfolio = managesBuildings && (route.path === '' || route.path === 'portfolio')
+
+  if (!managesBuildings && isBuildingReferent && (route.path === '' || route.path === 'portfolio')) {
+    const referentBuilding = data.memberships.find(m => m.isReferent === true)
+    if (referentBuilding) location.hash = `/portfolio?view=building&building=${encodeURIComponent(referentBuilding.buildingSlug)}`
+    return <Spinner label="Ouverture de la gouvernance de l’immeuble…" />
+  }
 
   if (wantsPortfolio) {
     return (
@@ -191,6 +207,8 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
     [memberships, requested],
   )
   const slug = membership.buildingSlug
+  const residentSection = route.path.startsWith('resident/') ? route.path.slice('resident/'.length) : 'overview'
+  const navigateResident = section => go(`/resident${section === 'overview' ? '' : `/${section}`}?building=${encodeURIComponent(slug)}`)
 
   const [workspace, setWorkspace] = useState({ status: 'loading', data: null, error: null })
 
@@ -262,7 +280,7 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
   return (
     <ResidentV2View
       data={workspaceData} session={session} setToast={setToast} onLogout={onLogout}
-      onReport={actions.createTicket}
+      onReport={actions.createTicket} initialSection={residentSection} onNavigate={navigateResident}
     />
   )
 }
