@@ -19,7 +19,13 @@ export const shortDate = value =>
   format(value, { day: '2-digit', month: 'short' }).replace('.', '')
 export const dayAndTime = value =>
   format(value, { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })
-export const timelineDate = value => format(value, { day: '2-digit', month: '2-digit' })
+export const timelineDate = value => {
+  const date = toDate(value)
+  if (!date) return '—'
+  const day = new Intl.DateTimeFormat('fr-BE', { day: '2-digit', month: '2-digit' }).format(date)
+  const time = new Intl.DateTimeFormat('fr-BE', { hour: '2-digit', minute: '2-digit' }).format(date)
+  return `${day} · ${time}`
+}
 export const dayNumber = value => toDate(value)?.getDate() ?? '—'
 export const monthShort = value => format(value, { month: 'short' }).replace('.', '')
 
