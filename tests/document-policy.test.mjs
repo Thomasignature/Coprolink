@@ -12,6 +12,8 @@ test('private documents require the server capability', () => {
   assert.equal(mayReadDocument('public', false), true)
   assert.equal(mayReadDocument('private', false), false)
   assert.equal(mayReadDocument('private', true), true)
+  assert.equal(mayReadDocument('owners', true, false), false)
+  assert.equal(mayReadDocument('owners', true, true), true)
 })
 
 test('download names cannot inject headers or paths', () => {

@@ -12,7 +12,7 @@ export const documentStoreName = (context = "dev") => {
 export const documentBelongsToBuilding = (storageKey: string, buildingId: number) =>
   storageKey.startsWith(documentStoragePrefix(buildingId)) && !storageKey.includes("../");
 
-export const mayReadDocument = (access: string, canReadPrivate: boolean) =>
-  access === "public" || canReadPrivate;
+export const mayReadDocument = (access: string, canReadPrivate: boolean, canReadOwners = false) =>
+  access === "public" || (access === "owners" ? canReadOwners : canReadPrivate);
 
 export const safeDownloadName = (value: string) => value.replace(/[\r\n"\\/]/g, "_").slice(0, 180) || "document";

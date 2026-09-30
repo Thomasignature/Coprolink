@@ -54,6 +54,12 @@ export default function BuildingModelV3View({ buildingSlug, onBack, setToast }) 
     setToast?.(result.message || 'Accès CoproLink préparé.')
   }
 
+  const endRelation = relation => {
+    if (!window.confirm('Cette personne ne sera pas supprimée. Sa relation avec le lot sera archivée et restera disponible dans l’historique.')) return
+    const reason = window.prompt('Motif : sale, lease_end, move, inheritance ou other', 'other') || 'other'
+    return mutate(() => apiV3.update(buildingSlug, 'relation', relation.id, { endDate: new Date().toISOString().slice(0, 10), endReason: reason }))
+  }
+
   if (!buildingSlug) return <ErrorPanel title="Aucun immeuble" message="Sélectionnez un immeuble." />
   if (state.status === 'loading') return <Spinner label="Chargement du modèle V3…" />
   if (state.status === 'error') return <ErrorPanel title="Modèle V3 indisponible" message={state.error} onRetry={load} />
@@ -70,7 +76,7 @@ export default function BuildingModelV3View({ buildingSlug, onBack, setToast }) 
       <section className="m3-stats">
         <article><DoorOpen /><strong>{model.units.length}</strong><span>lots</span></article>
         <article><Users /><strong>{model.people.length}</strong><span>personnes</span></article>
-        <article><UserCog /><strong>{model.referents.length}</strong><span>référents</span></article>
+        <article><UserCog /><strong>{model.referents.filter(item => !item.endedAt).length}</strong><span>référents actifs</span></article>
         <article><Wrench /><strong>{model.professionals.filter(p => p.isActive).length}</strong><span>professionnels actifs</span></article>
       </section>
 
@@ -110,7 +116,7 @@ export default function BuildingModelV3View({ buildingSlug, onBack, setToast }) 
             <input placeholder="Quotité éventuelle" value={relationDraft.shareLabel} onChange={e => setRelationDraft(v => ({ ...v, shareLabel: e.target.value }))} />
             <button><Plus /> Lier</button>
           </form>
-          <div className="m3-list">{model.relations.map(rel => { const person = model.people.find(p => p.id === rel.personId); const unit = model.units.find(u => u.id === rel.unitId); return <div key={rel.id}><div><strong>{person?.fullName || 'Personne'} → {unit?.label || 'Lot'}</strong><span>{relationLabel(rel.relationType)}{rel.shareLabel ? ` · ${rel.shareLabel}` : ''}{rel.endDate ? ' · historique' : ''}</span></div><button onClick={() => mutate(() => apiV3.remove(buildingSlug, 'relation', rel.id))}><Trash2 /></button></div> })}</div>
+          <div className="m3-list">{model.relations.map(rel => { const person = model.people.find(p => p.id === rel.personId); const unit = model.units.find(u => u.id === rel.unitId); return <div key={rel.id}><div><strong>{person?.fullName || 'Personne'} → {unit?.label || 'Lot'}</strong><span>{relationLabel(rel.relationType)}{rel.shareLabel ? ` · ${rel.shareLabel}` : ''}{rel.endDate ? ` · terminé le ${rel.endDate}${rel.endReason ? ` (${rel.endReason})` : ''}` : ''}</span></div>{rel.endDate ? <CheckCircle2 /> : <button onClick={() => endRelation(rel)}>Mettre fin</button>}</div> })}</div>
         </section>
 
         <section className="m3-card">
@@ -119,7 +125,7 @@ export default function BuildingModelV3View({ buildingSlug, onBack, setToast }) 
             <select value={referentPersonId} onChange={e => setReferentPersonId(e.target.value)} required><option value="">Choisir une personne…</option>{model.people.map(person => <option value={person.id} key={person.id}>{person.fullName}</option>)}</select>
             <button><Plus /> Désigner</button>
           </form>
-          <div className="m3-list">{model.referents.map(ref => { const person = model.people.find(p => p.id === ref.personId); return <div key={ref.id}><div><strong>{person?.fullName || 'Personne'}</strong><span>{ref.isPrimary ? 'Référent principal' : 'Référent CoproLink'}</span></div><button onClick={() => mutate(() => apiV3.remove(buildingSlug, 'referent', ref.id))}><Trash2 /></button></div> })}</div>
+          <div className="m3-list">{model.referents.map(ref => { const person = model.people.find(p => p.id === ref.personId); return <div key={ref.id}><div><strong>{person?.fullName || 'Personne'}</strong><span>{ref.endedAt ? `Ancien référent · fin ${new Date(ref.endedAt).toLocaleDateString('fr-BE')}` : ref.isPrimary ? 'Référent principal' : 'Référent CoproLink'}</span></div>{ref.endedAt ? <CheckCircle2 /> : <button onClick={() => mutate(() => apiV3.remove(buildingSlug, 'referent', ref.id))}>Mettre fin</button>}</div> })}</div>
         </section>
 
         <section className="m3-card m3-wide">

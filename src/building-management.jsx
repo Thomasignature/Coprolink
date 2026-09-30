@@ -197,7 +197,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
     const current = activeRelations.filter(item => item.personId === personId && item.unitId === unitId)
     await runAction(async () => {
       for (const rel of current.filter(item => !desired.has(item.relationType))) {
-        await apiV3.update(slug, 'relation', rel.id, { endDate: today() })
+        await apiV3.update(slug, 'relation', rel.id, { endDate: today(), endReason: 'other' })
       }
       const currentTypes = new Set(current.map(item => item.relationType))
       for (const relationType of desired) {

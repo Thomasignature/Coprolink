@@ -48,10 +48,13 @@ export const buildingMembers = pgTable("building_members", {
   shareLabel: text("share_label").notNull().default(""),
   quarterlyCall: numeric("quarterly_call", { precision: 10, scale: 2 }).notNull().default("0"),
   balance: numeric({ precision: 10, scale: 2 }).notNull().default("0"),
+  endedAt: timestamp("ended_at"),
+  endedReason: text("ended_reason").notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("building_members_building_user_idx").on(t.buildingId, t.userId),
   index("building_members_user_idx").on(t.userId),
+  index("building_members_active_idx").on(t.buildingId, t.endedAt),
 ]);
 
 export const pendingMembers = pgTable("pending_members", {
@@ -68,6 +71,20 @@ export const pendingMembers = pgTable("pending_members", {
 }, (t) => [
   uniqueIndex("pending_members_building_email_idx").on(t.buildingId, t.email),
   index("pending_members_email_idx").on(t.email),
+]);
+
+/** Invitation métier à onboarder un cabinet syndic, distincte des accès immeuble. */
+export const syndicOnboardingInvites = pgTable("syndic_onboarding_invites", {
+  id: serial().primaryKey(),
+  email: text().notNull(),
+  organizationName: text("organization_name").notNull().default(""),
+  invitedByUserId: text("invited_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  expiresAt: timestamp("expires_at").notNull(),
+  acceptedAt: timestamp("accepted_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (t) => [
+  uniqueIndex("syndic_onboarding_invites_email_idx").on(t.email),
+  index("syndic_onboarding_invites_expiry_idx").on(t.expiresAt),
 ]);
 
 export const tickets = pgTable("tickets", {

@@ -3,12 +3,13 @@ import { getUser } from "@netlify/identity";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { auditLog, buildingMembers, buildings, pendingMembers, terminals, users, type Role } from "../../db/schema.js";
-import { buildingPeople, buildingReferents } from "../../db/schema-v3.js";
+import { buildingPeople, buildingReferents, buildingUnits, unitPersonRelations } from "../../db/schema-v3.js";
+import { capabilitiesForRelations } from "./lifecycle-policy.mts";
 
 export const TERMINAL_HEADER = "x-terminal-token";
 
 const ROLE_CAPABILITIES: Record<Role, readonly string[]> = {
-  resident: ["building:read", "tickets:read:own", "tickets:create", "documents:read:private", "finance:read:own"],
+  resident: ["building:read", "tickets:read:own", "tickets:create", "documents:read:private"],
   council_member: [
     "building:read", "tickets:read:own", "tickets:read:all", "tickets:create",
     "documents:read:private", "finance:read:own", "audit:read",
@@ -116,7 +117,10 @@ const claimPendingMemberships = async (userId: string, email: string) => {
       role: row.role,
       unitLabel: row.unitLabel,
       shareLabel: row.shareLabel,
-    }).onConflictDoNothing({ target: [buildingMembers.buildingId, buildingMembers.userId] });
+    }).onConflictDoUpdate({
+      target: [buildingMembers.buildingId, buildingMembers.userId],
+      set: { role: row.role, unitLabel: row.unitLabel, shareLabel: row.shareLabel, endedAt: null, endedReason: "" },
+    });
 
     await linkBuildingPersonAccount(row.buildingId, needle, userId);
 
@@ -187,7 +191,7 @@ export const listMemberships = async (userId: string): Promise<Membership[]> => 
     shareLabel: buildingMembers.shareLabel,
   }).from(buildingMembers)
     .innerJoin(buildings, eq(buildingMembers.buildingId, buildings.id))
-    .where(eq(buildingMembers.userId, userId));
+    .where(and(eq(buildingMembers.userId, userId), isNull(buildingMembers.endedAt)));
   return rows.map((r) => ({ ...r, role: r.role as Role }));
 };
 
@@ -195,6 +199,20 @@ const buildCapabilities = (role: Role | null, isPlatformAdmin: boolean): readonl
   const fromRole = role ? ROLE_CAPABILITIES[role] ?? [] : [];
   if (!isPlatformAdmin) return fromRole;
   return Array.from(new Set([...fromRole, ...ROLE_CAPABILITIES.platform_admin]));
+};
+
+const residentRelationCapabilities = async (buildingId: number, userId: string) => {
+  const rows = await db.select({ relationType: unitPersonRelations.relationType })
+    .from(unitPersonRelations)
+    .innerJoin(buildingPeople, eq(unitPersonRelations.personId, buildingPeople.id))
+    .innerJoin(buildingUnits, eq(unitPersonRelations.unitId, buildingUnits.id))
+    .where(and(
+      eq(buildingPeople.userId, userId),
+      eq(buildingPeople.buildingId, buildingId),
+      eq(buildingUnits.buildingId, buildingId),
+      isNull(unitPersonRelations.endDate),
+    ));
+  return capabilitiesForRelations(rows.map((row) => row.relationType));
 };
 
 export const authorize = async (
@@ -239,7 +257,8 @@ export const authorize = async (
       throw new HttpError(403, "Aucun accès à cet immeuble");
     }
 
-    const capabilities = buildCapabilities(membership.role, principal.isPlatformAdmin);
+    const capabilities = [...buildCapabilities(membership.role, principal.isPlatformAdmin)];
+    if (membership.role === "resident") capabilities.push(...await residentRelationCapabilities(membership.buildingId, principal.userId));
     context = {
       principal,
       buildingId: membership.buildingId,

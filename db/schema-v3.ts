@@ -46,6 +46,7 @@ export const unitPersonRelations = pgTable("unit_person_relations", {
   shareLabel: text("share_label").notNull().default(""),
   startDate: date("start_date"),
   endDate: date("end_date"),
+  endReason: text("end_reason").notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   index("unit_person_relations_unit_idx").on(t.unitId),
@@ -72,6 +73,7 @@ export const buildingReferents = pgTable("building_referents", {
 export const buildingProfessionals = pgTable("building_professionals", {
   id: serial().primaryKey(),
   buildingId: integer("building_id").notNull().references(() => buildings.id, { onDelete: "cascade" }),
+  userId: text("user_id").references(() => users.id, { onDelete: "set null" }),
   professionalType: text("professional_type").notNull(),
   organizationName: text("organization_name").notNull().default(""),
   contactName: text("contact_name").notNull().default(""),
@@ -80,6 +82,7 @@ export const buildingProfessionals = pgTable("building_professionals", {
   isActive: boolean("is_active").notNull().default(true),
   startedAt: date("started_at"),
   endedAt: date("ended_at"),
+  endReason: text("end_reason").notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [index("building_professionals_building_type_idx").on(t.buildingId, t.professionalType)]);
 
@@ -105,6 +108,7 @@ export const generalAssemblies = pgTable("general_assemblies", {
   createdByUserId: text("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  archivedAt: timestamp("archived_at"),
 }, (t) => [index("general_assemblies_building_date_idx").on(t.buildingId, t.assemblyDate)]);
 
 export const assemblyAgendaItems = pgTable("assembly_agenda_items", {
