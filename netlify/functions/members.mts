@@ -1,8 +1,9 @@
 import type { Config, Context } from "@netlify/functions";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { buildingMembers, pendingMembers, ROLES, users, type Role } from "../../db/schema.js";
+import { auditLog, buildingMembers, buildings, pendingMembers, ROLES, users, type Role } from "../../db/schema.js";
 import { authorize, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { parseMembershipEndDate } from "../lib/membership.mts";
 import {
   IdentityAdminUnavailableError,
   IdentityEmailTakenError,
@@ -22,18 +23,6 @@ const assertAssignableRole = (value: unknown): Role => {
     throw new HttpError(422, `Rôle attendu parmi : ${ASSIGNABLE_ROLES.join(", ")}`);
   }
   return value as Role;
-};
-
-const countManagers = async (buildingId: number, excludeMemberId?: number) => {
-  const rows = await db
-    .select({ id: buildingMembers.id })
-    .from(buildingMembers)
-    .where(
-      excludeMemberId
-        ? and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.role, "manager"), ne(buildingMembers.id, excludeMemberId))
-        : and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.role, "manager")),
-    );
-  return rows.length;
 };
 
 const findMirroredAccount = async (email: string) => {
@@ -57,11 +46,20 @@ const grantMembership = async (
   account: IdentityAccount,
   input: { role: Role; unitLabel: string; shareLabel: string },
 ) => {
-  const [member] = await db
-    .insert(buildingMembers)
-    .values({ buildingId, userId: account.id, ...input })
-    .onConflictDoUpdate({ target: [buildingMembers.buildingId, buildingMembers.userId], set: input })
-    .returning();
+  const member = await db.transaction(async (tx) => {
+    // Le verrou d'immeuble sérialise invitations et réactivations. L'index
+    // partiel reste la dernière barrière contre deux périodes actives.
+    await tx.execute(sql`select ${buildings.id} from ${buildings} where ${buildings.id} = ${buildingId} for update`);
+    const [active] = await tx.select().from(buildingMembers).where(and(
+      eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.userId, account.id), isNull(buildingMembers.revokedAt),
+    )).limit(1);
+    if (active) {
+      const [updated] = await tx.update(buildingMembers).set(input).where(eq(buildingMembers.id, active.id)).returning();
+      return updated;
+    }
+    const [created] = await tx.insert(buildingMembers).values({ buildingId, userId: account.id, ...input }).returning();
+    return created;
+  });
 
   await db.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, buildingId), eq(pendingMembers.email, email)));
   return member;
@@ -162,7 +160,7 @@ export default async (req: Request, context: Context) => {
 
     if (req.method === "GET") {
       const rows = await db
-        .select({ id: buildingMembers.id, userId: buildingMembers.userId, email: users.email, fullName: users.fullName, role: buildingMembers.role, unitLabel: buildingMembers.unitLabel, shareLabel: buildingMembers.shareLabel })
+        .select({ id: buildingMembers.id, userId: buildingMembers.userId, email: users.email, fullName: users.fullName, role: buildingMembers.role, unitLabel: buildingMembers.unitLabel, shareLabel: buildingMembers.shareLabel, createdAt: buildingMembers.createdAt, endedOn: buildingMembers.endedOn, revokedAt: buildingMembers.revokedAt, endReason: buildingMembers.endReason })
         .from(buildingMembers)
         .innerJoin(users, eq(buildingMembers.userId, users.id))
         .where(eq(buildingMembers.buildingId, ctx.buildingId));
@@ -171,7 +169,8 @@ export default async (req: Request, context: Context) => {
       const activation = await listActivationStates().catch((error) => { console.error("État d'activation Identity indisponible:", error); return null; });
 
       return Response.json({
-        members: rows.map(({ userId, ...member }) => ({ ...member, activated: activation ? (activation.get(userId) ?? false) : null })),
+        members: rows.filter(row => row.revokedAt === null).map(({ userId, ...member }) => ({ ...member, activated: activation ? (activation.get(userId) ?? false) : null })),
+        endedMembers: rows.filter(row => row.revokedAt !== null).map(({ userId: _userId, ...member }) => ({ ...member, revokedAt: member.revokedAt?.toISOString() })),
         pendingMembers: waiting.map((row) => ({ id: row.id, email: row.email, fullName: row.fullName, role: row.role, unitLabel: row.unitLabel, invitationSent: row.invitationSent, createdAt: row.createdAt.toISOString() })),
         assignableRoles: ASSIGNABLE_ROLES,
         identityAdminAvailable: activation !== null,
@@ -229,6 +228,7 @@ export default async (req: Request, context: Context) => {
     const scope = and(eq(buildingMembers.id, memberId), eq(buildingMembers.buildingId, ctx.buildingId));
     const [target] = await db.select().from(buildingMembers).where(scope).limit(1);
     if (!target) return Response.json({ error: "Membre introuvable" }, { status: 404 });
+    if (target.revokedAt) throw new HttpError(409, "Cette relation est déjà terminée et ne peut plus être modifiée");
 
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
@@ -265,18 +265,47 @@ export default async (req: Request, context: Context) => {
       }
 
       const role = assertAssignableRole(body.role ?? target.role);
-      if (target.role === "manager" && role !== "manager" && (await countManagers(ctx.buildingId, memberId)) === 0) throw new HttpError(409, "Impossible de retirer le dernier gestionnaire de l'immeuble");
-
-      const [updated] = await db.update(buildingMembers).set({ role, unitLabel: readString(body.unitLabel, "lot", { max: 80, required: false }) || target.unitLabel, shareLabel: readString(body.shareLabel, "quotité", { max: 40, required: false }) || target.shareLabel }).where(scope).returning();
-      await writeAudit(ctx, { action: "member.updated", entityType: "building_member", entityId: updated.id, summary: `Rôle du membre #${updated.id} défini à « ${updated.role} ».` });
+      const updated = await db.transaction(async (tx) => {
+        await tx.execute(sql`select ${buildings.id} from ${buildings} where ${buildings.id} = ${ctx.buildingId} for update`);
+        const [locked] = await tx.select().from(buildingMembers).where(scope).limit(1);
+        if (!locked || locked.revokedAt) throw new HttpError(409, "Cette relation est déjà terminée et ne peut plus être modifiée");
+        if (locked.role === "manager" && role !== "manager") {
+          const otherManagers = await tx.select({ id: buildingMembers.id }).from(buildingMembers).where(and(
+            eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.role, "manager"),
+            isNull(buildingMembers.revokedAt), ne(buildingMembers.id, memberId),
+          ));
+          if (otherManagers.length === 0) throw new HttpError(409, "Impossible de retirer le dernier gestionnaire de l'immeuble");
+        }
+        const [row] = await tx.update(buildingMembers).set({ role, unitLabel: readString(body.unitLabel, "lot", { max: 80, required: false }) || locked.unitLabel, shareLabel: readString(body.shareLabel, "quotité", { max: 40, required: false }) || locked.shareLabel }).where(and(scope, isNull(buildingMembers.revokedAt))).returning();
+        await tx.insert(auditLog).values({ buildingId: ctx.buildingId, actorUserId: ctx.principal.kind === "user" ? ctx.principal.userId : null, actorLabel: ctx.actorLabel, actorRole: ctx.role ?? "terminal", action: "member.updated", entityType: "building_member", entityId: String(row.id), summary: `Rôle du membre #${row.id} défini à « ${row.role} ».` });
+        return row;
+      });
       return Response.json({ id: updated.id, role: updated.role, unitLabel: updated.unitLabel });
     }
 
     if (req.method === "DELETE") {
-      if (target.role === "manager" && (await countManagers(ctx.buildingId, memberId)) === 0) throw new HttpError(409, "Impossible de retirer le dernier gestionnaire de l'immeuble");
-      await db.delete(buildingMembers).where(scope);
-      await writeAudit(ctx, { action: "member.revoked", entityType: "building_member", entityId: memberId, summary: `Accès du membre #${memberId} retiré.` });
-      return Response.json({ id: memberId, removed: true });
+      const body = await req.json().catch(() => ({}));
+      const endReason = readString(body.reason, "motif", { max: 300 });
+      const requestedDate = readString(body.endedOn, "date de fin", { max: 10 });
+      let endedOn: string;
+      try { endedOn = parseMembershipEndDate(requestedDate); }
+      catch (error) { throw new HttpError(422, error instanceof Error ? error.message : "La date de fin est invalide"); }
+      const revokedAt = new Date();
+      await db.transaction(async (tx) => {
+        await tx.execute(sql`select ${buildings.id} from ${buildings} where ${buildings.id} = ${ctx.buildingId} for update`);
+        const [locked] = await tx.select().from(buildingMembers).where(scope).limit(1);
+        if (!locked || locked.revokedAt) throw new HttpError(409, "Cette relation est déjà terminée");
+        if (locked.role === "manager") {
+          const otherManagers = await tx.select({ id: buildingMembers.id }).from(buildingMembers).where(and(
+            eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.role, "manager"),
+            isNull(buildingMembers.revokedAt), ne(buildingMembers.id, memberId),
+          ));
+          if (otherManagers.length === 0) throw new HttpError(409, "Impossible de retirer le dernier gestionnaire de l'immeuble");
+        }
+        await tx.update(buildingMembers).set({ endedOn, revokedAt, endReason }).where(and(scope, isNull(buildingMembers.revokedAt)));
+        await tx.insert(auditLog).values({ buildingId: ctx.buildingId, actorUserId: ctx.principal.kind === "user" ? ctx.principal.userId : null, actorLabel: ctx.actorLabel, actorRole: ctx.role ?? "terminal", action: "member.ended", entityType: "building_member", entityId: String(memberId), summary: `Relation du membre #${memberId} terminée le ${endedOn} : ${endReason}.` });
+      });
+      return Response.json({ id: memberId, ended: true, endedOn, revokedAt: revokedAt.toISOString(), endReason });
     }
 
     return Response.json({ error: "Méthode non autorisée" }, { status: 405 });

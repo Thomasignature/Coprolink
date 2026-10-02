@@ -227,7 +227,7 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
     retryPendingInvite: pendingId => api.retryPendingInvite(slug, pendingId),
     cancelPendingInvite: pendingId => api.cancelPendingInvite(slug, pendingId),
     updateMember: (id, payload) => api.updateMember(slug, id, payload),
-    removeMember: id => api.removeMember(slug, id),
+    removeMember: (id, payload) => api.removeMember(slug, id, payload),
   }), [slug, load])
 
   if (workspace.status === 'loading') return <Spinner label="Chargement de l'immeuble…" />

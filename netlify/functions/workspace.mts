@@ -1,5 +1,5 @@
 import type { Config } from "@netlify/functions";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import {
   announcements, auditLog, buildingMembers, buildings, documents, events,
@@ -8,6 +8,7 @@ import { authorize, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import {
   listBuildingTickets, loadTicketTimeline, serializePublicTicket, serializeTicket,
 } from "../lib/data.mts";
+import { localBusinessDate } from "../lib/membership.mts";
 
 /**
  * Charge en une requête tout ce dont l'espace copropriétaire ou l'espace syndic
@@ -55,6 +56,10 @@ export default async (req: Request) => {
       .from(events)
       .where(eq(events.buildingId, ctx.buildingId))
       .orderBy(events.eventDate);
+    const today = localBusinessDate();
+    const serializeEvent = (e: typeof eventRows[number]) => ({ id: e.id, title: e.title, detail: e.detail, eventDate: e.eventDate, eventTime: e.eventTime, isPublic: e.isPublic });
+    const upcomingEvents = eventRows.filter((event) => event.eventDate >= today).map(serializeEvent);
+    const pastEvents = eventRows.filter((event) => event.eventDate < today).reverse().map(serializeEvent);
 
     const documentRows = await db
       .select()
@@ -79,7 +84,7 @@ export default async (req: Request) => {
       ? await db
           .select()
           .from(buildingMembers)
-          .where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.userId, myUserId)))
+          .where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.userId, myUserId), isNull(buildingMembers.revokedAt)))
           .limit(1)
       : [];
 
@@ -118,14 +123,8 @@ export default async (req: Request) => {
           isPublic: a.isPublic,
           publishedOn: a.publishedOn,
         })),
-        events: eventRows.map((e) => ({
-          id: e.id,
-          title: e.title,
-          detail: e.detail,
-          eventDate: e.eventDate,
-          eventTime: e.eventTime,
-          isPublic: e.isPublic,
-        })),
+        upcomingEvents,
+        pastEvents,
         documents: documentRows.map((d) => ({
           id: d.id,
           name: d.name,
