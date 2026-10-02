@@ -140,7 +140,7 @@ export default async (req: Request) => {
           folder: d.folder,
           access: d.access,
           updatedOn: d.updatedOn,
-          // Le contenu binaire n'est pas encore stocké (Netlify Blobs à venir).
+          // Fichier stocké dans Netlify Blobs, servi par /api/documents/:id.
           available: d.storageKey !== null,
         })),
         professionals: professionalRows.map((p) => ({

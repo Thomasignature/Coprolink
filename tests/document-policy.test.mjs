@@ -25,3 +25,10 @@ test('blob stores are separated by deploy context', () => {
   assert.equal(documentStoreName('deploy-preview'), 'coprolink-documents-deploy-preview')
   assert.notEqual(documentStoreName('production'), documentStoreName('deploy-preview'))
 })
+test('preview document stores are isolated by branch, including long similar names', () => {
+  const first = documentStoreName('deploy-preview', 'integration/full-test-2026-10-02');
+  const second = documentStoreName('deploy-preview', 'integration/full-test-2026-10-03');
+  assert.notEqual(first, second);
+  assert.ok(first.length <= 64);
+  assert.equal(documentStoreName('production', 'main'), documentStoreName('production'));
+});
