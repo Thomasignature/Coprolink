@@ -53,6 +53,9 @@ export const buildingMembers = pgTable("building_members", {
   shareLabel: text("share_label").notNull().default(""),
   quarterlyCall: numeric("quarterly_call", { precision: 10, scale: 2 }).notNull().default("0"),
   balance: numeric({ precision: 10, scale: 2 }).notNull().default("0"),
+  /** Une relation terminée reste conservée pour l'historique et ne donne plus aucun accès. */
+  endedAt: timestamp("ended_at"),
+  endReason: text("end_reason"),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (t) => [
   uniqueIndex("building_members_building_user_idx").on(t.buildingId, t.userId),

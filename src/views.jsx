@@ -1011,13 +1011,14 @@ function TerminalsPanel({ actions, setToast }) {
 
 function MembersPanel({ actions, setToast }) {
   const [state, setState] = useState({
-    loading: true, error: null, members: [], pending: [], roles: [], identityAdminAvailable: true,
+    loading: true, error: null, members: [], endedMembers: [], pending: [], roles: [], identityAdminAvailable: true,
   })
   const [email, setEmail] = useState('')
   const [fullName, setFullName] = useState('')
   const [role, setRole] = useState('resident')
   const [unitLabel, setUnitLabel] = useState('')
   const [busy, setBusy] = useState(false)
+  const [ending, setEnding] = useState(null)
 
   const reload = async () => {
     setState(s => ({ ...s, loading: true }))
@@ -1027,13 +1028,14 @@ function MembersPanel({ actions, setToast }) {
         loading: false,
         error: null,
         members: data.members,
+        endedMembers: data.endedMembers ?? [],
         pending: data.pendingMembers ?? [],
         roles: data.assignableRoles,
         identityAdminAvailable: data.identityAdminAvailable !== false,
       })
     } catch (error) {
       setState({
-        loading: false, error: error.message, members: [], pending: [], roles: [], identityAdminAvailable: true,
+        loading: false, error: error.message, members: [], endedMembers: [], pending: [], roles: [], identityAdminAvailable: true,
       })
     }
   }
@@ -1200,20 +1202,33 @@ function MembersPanel({ actions, setToast }) {
                     </select>
                     <button
                       className="danger-btn"
-                      onClick={async () => {
-                        try {
-                          await actions.removeMember(m.id)
-                          setToast('Accès retiré')
-                          reload()
-                        } catch (error) { setToast(error.message) }
-                      }}
-                    ><Trash2 size={16} /> Retirer</button>
+                      onClick={() => setEnding(m)}
+                    ><Trash2 size={16} /> Mettre fin à la relation</button>
                   </div>
                 ))}
               </div>
             )
         )}
       </section>
+      {state.endedMembers.length > 0 && (
+        <section className="card table-card">
+          <div className="card-head"><div><span className="overline">Historique</span><h3>Relations terminées</h3></div></div>
+          <div className="terminal-list">
+            {state.endedMembers.map(m => (
+              <div className="terminal-row revoked" key={`ended-${m.id}`}>
+                <div><strong>{m.fullName || m.email}</strong><small>{m.unitLabel || roleLabel(m.role)} · fin le {longDate(m.endedAt)} · {m.endReason}</small></div>
+                <span className="status status-violet">Accès révoqué</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {ending && <EndRelationModal member={ending} onClose={() => setEnding(null)} onConfirm={async payload => {
+        await actions.removeMember(ending.id, payload)
+        setEnding(null)
+        setToast('Relation terminée et accès révoqué')
+        reload()
+      }} />}
     </>
   )
 }
@@ -1227,12 +1242,44 @@ const CATEGORIES = [
   ['Eau / fuite', '💧'], ['Nettoyage', '🧹'], ['Autre', '•••'],
 ]
 
+function EndRelationModal({ member, onClose, onConfirm }) {
+  const [endedOn, setEndedOn] = useState(new Date().toISOString().slice(0, 10))
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  return (
+    <Modal onClose={onClose} className="modal-card compose" labelledBy="end-relation-title">
+      <form onSubmit={async e => {
+        e.preventDefault()
+        if (!reason.trim() || busy) return
+        setBusy(true); setError('')
+        try { await onConfirm({ endedOn, reason: reason.trim() }) }
+        catch (err) { setError(err.message); setBusy(false) }
+      }}>
+        <div className="modal-head">
+          <div><span className="overline">Personnes & accès</span><h2 id="end-relation-title">Mettre fin à la relation</h2></div>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Fermer"><X /></button>
+        </div>
+        <p>Les accès de <strong>{member.fullName || member.email}</strong> seront immédiatement révoqués. La relation restera dans l'historique.</p>
+        <label>Date de fin<input type="date" value={endedOn} max={new Date().toISOString().slice(0, 10)} onChange={e => setEndedOn(e.target.value)} required /></label>
+        <label>Motif<textarea value={reason} onChange={e => setReason(e.target.value)} rows={3} maxLength={300} placeholder="Ex. Vente du lot" required /></label>
+        {error && <p className="form-error" role="alert">{error}</p>}
+        <div className="modal-actions">
+          <button type="button" className="secondary-btn" onClick={onClose}>Annuler</button>
+          <button className="danger-btn" disabled={busy || !reason.trim()}>{busy ? 'Traitement…' : 'Confirmer la fin de relation'}</button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
 function ReportModal({ onClose, onSubmit, setToast, allowPrivate = false }) {
   const [step, setStep] = useState(1)
   const [category, setCategory] = useState('Éclairage')
   const [location, setLocation] = useState('')
   const [description, setDescription] = useState('')
-  const [isPublic, setIsPublic] = useState(true)
+  const [isPublic, setIsPublic] = useState(false)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState('')
 
@@ -1257,14 +1304,19 @@ function ReportModal({ onClose, onSubmit, setToast, allowPrivate = false }) {
     }
   }
 
+  const requestClose = () => {
+    const dirty = step !== 3 && (location.trim() || description.trim())
+    if (!dirty || window.confirm('Abandonner ce signalement ? Votre saisie sera perdue.')) onClose()
+  }
+
   return (
-    <Modal onClose={onClose} className="modal-card report-modal" labelledBy="report-title">
+    <Modal onClose={requestClose} className="modal-card report-modal" labelledBy="report-title">
       <div className="modal-head">
         <div>
           <span className="overline">Signalement rapide</span>
           <h2 id="report-title">{step === 3 ? 'Merci, c\'est transmis.' : 'Que se passe-t-il ?'}</h2>
         </div>
-        <button className="icon-btn" onClick={onClose} aria-label="Fermer"><X /></button>
+        <button className="icon-btn" onClick={requestClose} aria-label="Fermer"><X /></button>
       </div>
 
       {step === 1 && (
@@ -1298,9 +1350,10 @@ function ReportModal({ onClose, onSubmit, setToast, allowPrivate = false }) {
           {allowPrivate && (
             <label className="checkbox">
               <input type="checkbox" checked={isPublic} onChange={e => setIsPublic(e.target.checked)} />
-              Visible par les autres occupants et sur l'écran du hall
+              Partager avec les autres occupants et sur l'écran du hall
             </label>
           )}
+          {allowPrivate && <p className="subtle">Désactivé par défaut : votre description reste privée, visible uniquement par vous et le gestionnaire.</p>}
           <button className="primary-btn full-btn" disabled={!location.trim() || !description.trim() || busy} onClick={submit}>
             {busy ? 'Envoi…' : 'Envoyer le signalement'}
           </button>

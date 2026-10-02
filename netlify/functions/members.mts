@@ -1,8 +1,9 @@
 import type { Config, Context } from "@netlify/functions";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { buildingMembers, pendingMembers, ROLES, users, type Role } from "../../db/schema.js";
 import { authorize, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { parseMembershipEndDate } from "../lib/membership.mts";
 import {
   IdentityAdminUnavailableError,
   IdentityEmailTakenError,
@@ -30,8 +31,8 @@ const countManagers = async (buildingId: number, excludeMemberId?: number) => {
     .from(buildingMembers)
     .where(
       excludeMemberId
-        ? and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.role, "manager"), ne(buildingMembers.id, excludeMemberId))
-        : and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.role, "manager")),
+        ? and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.role, "manager"), isNull(buildingMembers.endedAt), ne(buildingMembers.id, excludeMemberId))
+        : and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.role, "manager"), isNull(buildingMembers.endedAt)),
     );
   return rows.length;
 };
@@ -60,7 +61,7 @@ const grantMembership = async (
   const [member] = await db
     .insert(buildingMembers)
     .values({ buildingId, userId: account.id, ...input })
-    .onConflictDoUpdate({ target: [buildingMembers.buildingId, buildingMembers.userId], set: input })
+    .onConflictDoUpdate({ target: [buildingMembers.buildingId, buildingMembers.userId], set: { ...input, endedAt: null, endReason: null } })
     .returning();
 
   await db.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, buildingId), eq(pendingMembers.email, email)));
@@ -162,7 +163,7 @@ export default async (req: Request, context: Context) => {
 
     if (req.method === "GET") {
       const rows = await db
-        .select({ id: buildingMembers.id, userId: buildingMembers.userId, email: users.email, fullName: users.fullName, role: buildingMembers.role, unitLabel: buildingMembers.unitLabel, shareLabel: buildingMembers.shareLabel })
+        .select({ id: buildingMembers.id, userId: buildingMembers.userId, email: users.email, fullName: users.fullName, role: buildingMembers.role, unitLabel: buildingMembers.unitLabel, shareLabel: buildingMembers.shareLabel, endedAt: buildingMembers.endedAt, endReason: buildingMembers.endReason })
         .from(buildingMembers)
         .innerJoin(users, eq(buildingMembers.userId, users.id))
         .where(eq(buildingMembers.buildingId, ctx.buildingId));
@@ -171,7 +172,8 @@ export default async (req: Request, context: Context) => {
       const activation = await listActivationStates().catch((error) => { console.error("État d'activation Identity indisponible:", error); return null; });
 
       return Response.json({
-        members: rows.map(({ userId, ...member }) => ({ ...member, activated: activation ? (activation.get(userId) ?? false) : null })),
+        members: rows.filter(row => row.endedAt === null).map(({ userId, ...member }) => ({ ...member, activated: activation ? (activation.get(userId) ?? false) : null })),
+        endedMembers: rows.filter(row => row.endedAt !== null).map(({ userId: _userId, ...member }) => ({ ...member, endedAt: member.endedAt?.toISOString() })),
         pendingMembers: waiting.map((row) => ({ id: row.id, email: row.email, fullName: row.fullName, role: row.role, unitLabel: row.unitLabel, invitationSent: row.invitationSent, createdAt: row.createdAt.toISOString() })),
         assignableRoles: ASSIGNABLE_ROLES,
         identityAdminAvailable: activation !== null,
@@ -274,9 +276,15 @@ export default async (req: Request, context: Context) => {
 
     if (req.method === "DELETE") {
       if (target.role === "manager" && (await countManagers(ctx.buildingId, memberId)) === 0) throw new HttpError(409, "Impossible de retirer le dernier gestionnaire de l'immeuble");
-      await db.delete(buildingMembers).where(scope);
-      await writeAudit(ctx, { action: "member.revoked", entityType: "building_member", entityId: memberId, summary: `Accès du membre #${memberId} retiré.` });
-      return Response.json({ id: memberId, removed: true });
+      const body = await req.json().catch(() => ({}));
+      const endReason = readString(body.reason, "motif", { max: 300 });
+      const requestedDate = readString(body.endedOn, "date de fin", { max: 10 });
+      let endedAt: Date;
+      try { endedAt = parseMembershipEndDate(requestedDate); }
+      catch (error) { throw new HttpError(422, error instanceof Error ? error.message : "La date de fin est invalide"); }
+      await db.update(buildingMembers).set({ endedAt, endReason }).where(scope);
+      await writeAudit(ctx, { action: "member.ended", entityType: "building_member", entityId: memberId, summary: `Relation du membre #${memberId} terminée le ${requestedDate} : ${endReason}.` });
+      return Response.json({ id: memberId, ended: true, endedAt: endedAt.toISOString(), endReason });
     }
 
     return Response.json({ error: "Méthode non autorisée" }, { status: 405 });
