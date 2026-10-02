@@ -1,6 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { getUser } from "@netlify/identity";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { auditLog, buildingMembers, buildings, pendingMembers, terminals, users, type Role } from "../../db/schema.js";
 import { buildingPeople, buildingReferents, buildingUnits, unitPersonRelations } from "../../db/schema-v3.js";
@@ -111,14 +111,13 @@ const claimPendingMemberships = async (userId: string, email: string) => {
   const pending = await db.select().from(pendingMembers).where(eq(pendingMembers.email, needle));
   if (pending.length === 0) return;
 
-  const claimedIds: number[] = [];
   for (const row of pending) {
     const result = await grantOrUpdateMembership(row.buildingId, userId, {
       role: row.role as Role, unitLabel: row.unitLabel, shareLabel: row.shareLabel,
-    });
+    }, { pendingId: row.id, preserveRole: true });
     // Une invitation obsolète ne peut jamais rétrograder le dernier gestionnaire.
     // Elle reste visible côté syndic pour être corrigée explicitement.
-    if (result.blocked) continue;
+    if (result.blocked || !result.member) continue;
 
     await linkBuildingPersonAccount(row.buildingId, needle, userId);
 
@@ -126,16 +125,13 @@ const claimPendingMemberships = async (userId: string, email: string) => {
       buildingId: row.buildingId,
       actorUserId: userId,
       actorLabel: needle,
-      actorRole: row.role,
+      actorRole: result.member.role,
       action: "member.claimed",
       entityType: "building_member",
       entityId: "",
       summary: `${needle} a activé son accès CoproLink.`,
     });
-    claimedIds.push(row.id);
   }
-
-  if (claimedIds.length) await db.delete(pendingMembers).where(inArray(pendingMembers.id, claimedIds));
 };
 
 export const resolvePrincipal = async (req: Request): Promise<Principal | null> => {

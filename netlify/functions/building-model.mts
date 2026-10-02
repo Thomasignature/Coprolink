@@ -194,9 +194,9 @@ export default async (req: Request) => {
 
       if (entity === "person") {
         await assertPersonInBuilding(ctx.buildingId, id);
+        if (body.email !== undefined) throw new HttpError(409, "Utilisez la correction sécurisée de l’adresse dans les accès CoproLink.");
         const [updated] = await db.update(buildingPeople).set({
           ...(body.fullName !== undefined ? { fullName: readString(body.fullName, "nom", { max: 120 }) } : {}),
-          ...(body.email !== undefined ? { email: optionalString(body.email, "e-mail", 200).toLowerCase() } : {}),
           ...(body.phone !== undefined ? { phone: optionalString(body.phone, "téléphone", 40) } : {}),
           updatedAt: new Date(),
         }).where(and(eq(buildingPeople.id, id), eq(buildingPeople.buildingId, ctx.buildingId))).returning();

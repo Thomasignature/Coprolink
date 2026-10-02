@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Building2, CheckCircle2, DoorOpen, Plus, ShieldCheck, Trash2, UserCog, Users, Wrench } from 'lucide-react'
-import { apiV3 } from './api-v3.js'
+import { apiV3, correctAndReinvitePerson } from './api-v3.js'
 import { ErrorPanel, Spinner } from './views.jsx'
 import PersonAccessControl from './person-access-control.jsx'
 import './building-model-v3.css'
@@ -43,15 +43,18 @@ export default function BuildingModelV3View({ buildingSlug, onBack, setToast }) 
   }
 
   const saveEmail = async (person, email) => {
-    await apiV3.update(buildingSlug, 'person', person.id, { email })
-    await load()
-    setToast?.('Adresse e-mail enregistrée.')
+    try {
+      const result = await correctAndReinvitePerson(buildingSlug, person, email)
+      setToast?.(result.message || 'Adresse e-mail enregistrée.')
+      return result
+    } finally { await load() }
   }
 
   const invite = async person => {
     const result = await apiV3.invitePerson(buildingSlug, person.id)
     await load()
     setToast?.(result.message || 'Accès CoproLink préparé.')
+    return result
   }
 
   const endRelation = relation => {

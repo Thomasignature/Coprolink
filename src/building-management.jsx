@@ -5,7 +5,7 @@ import {
   UserCog, Users, Wrench,
 } from 'lucide-react'
 import { api } from './api.js'
-import { apiV3 } from './api-v3.js'
+import { apiV3, correctAndReinvitePerson } from './api-v3.js'
 import { ErrorPanel, Logo, Spinner } from './views.jsx'
 import PersonAccessControl from './person-access-control.jsx'
 import SyndicAssembliesPanel from './syndic-assemblies.jsx'
@@ -156,7 +156,10 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
 
   const saveEmail = (person, email) => {
     if (!isSyndicOperator) return Promise.reject(new Error('Seul le syndic peut modifier les coordonnées administratives.'))
-    return runAction(() => apiV3.update(slug, 'person', person.id, { email }))
+    return runAction(async () => {
+      try { return await correctAndReinvitePerson(slug, person, email) }
+      catch (error) { await load(); throw error }
+    })
   }
   const invitePerson = person => {
     if (!isSyndicOperator) return Promise.reject(new Error('Seul le syndic peut envoyer les accès CoproLink.'))
