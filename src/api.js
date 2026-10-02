@@ -101,8 +101,8 @@ export const api = {
     request(`/api/members/pending/${pendingId}${buildingQuery(slug)}`, { method: 'DELETE' }),
   updateMember: (slug, id, data) =>
     request(`/api/members/${id}${buildingQuery(slug)}`, { method: 'PATCH', body: data }),
-  removeMember: (slug, id) =>
-    request(`/api/members/${id}${buildingQuery(slug)}`, { method: 'DELETE' }),
+  removeMember: (slug, id, data) =>
+    request(`/api/members/${id}${buildingQuery(slug)}`, { method: 'DELETE', body: data }),
 
   setupBuilding: ({ setupToken, ...data }) =>
     request('/api/setup', {

@@ -1,5 +1,5 @@
 import type { Config } from "@netlify/functions";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import {
   announcements, auditLog, buildingMembers, buildings, documents, events,
@@ -53,7 +53,7 @@ export default async (req: Request) => {
     const eventRows = await db
       .select()
       .from(events)
-      .where(eq(events.buildingId, ctx.buildingId))
+      .where(and(eq(events.buildingId, ctx.buildingId), gte(events.eventDate, new Date().toISOString().slice(0, 10))))
       .orderBy(events.eventDate);
 
     const documentRows = await db

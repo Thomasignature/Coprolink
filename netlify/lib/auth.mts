@@ -238,7 +238,9 @@ export const listMemberships = async (userId: string): Promise<Membership[]> => 
     })
     .from(buildingMembers)
     .innerJoin(buildings, eq(buildingMembers.buildingId, buildings.id))
-    .where(eq(buildingMembers.userId, userId));
+    // Une relation terminée est historique : elle ne doit jamais rouvrir une
+    // session ni accorder une capacité, même si le compte Identity reste actif.
+    .where(and(eq(buildingMembers.userId, userId), isNull(buildingMembers.endedAt)));
 
   return rows.map((r) => ({ ...r, role: r.role as Role }));
 };

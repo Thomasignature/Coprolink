@@ -1,5 +1,5 @@
 import type { Config } from "@netlify/functions";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gte } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { announcements, buildings, documents, events } from "../../db/schema.js";
 import { authorize, jsonError } from "../lib/auth.mts";
@@ -37,7 +37,7 @@ export default async (req: Request) => {
     const publicEvents = await db
       .select()
       .from(events)
-      .where(and(eq(events.buildingId, ctx.buildingId), eq(events.isPublic, true)))
+      .where(and(eq(events.buildingId, ctx.buildingId), eq(events.isPublic, true), gte(events.eventDate, new Date().toISOString().slice(0, 10))))
       .orderBy(asc(events.eventDate))
       .limit(12);
 
