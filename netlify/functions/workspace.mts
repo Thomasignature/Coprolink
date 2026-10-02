@@ -1,9 +1,11 @@
 import type { Config } from "@netlify/functions";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { documentAccessLevels } from "../lib/document-policy.mts";
 import { db } from "../../db/index.js";
 import {
   announcements, auditLog, buildingMembers, buildings, documents, events,
 } from "../../db/schema.js";
+import { buildingProfessionals } from "../../db/schema-v3.js";
 import { authorize, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import {
   listBuildingTickets, loadTicketTimeline, serializePublicTicket, serializeTicket,
@@ -60,11 +62,16 @@ export default async (req: Request) => {
       .select()
       .from(documents)
       .where(
-        canSeePrivateDocs
-          ? eq(documents.buildingId, ctx.buildingId)
-          : and(eq(documents.buildingId, ctx.buildingId), eq(documents.access, "public")),
+        and(eq(documents.buildingId, ctx.buildingId), inArray(documents.access,
+          documentAccessLevels(canSeePrivateDocs, ctx.can("documents:read:owners")))),
       )
       .orderBy(desc(documents.updatedOn));
+
+    const professionalRows = await db
+      .select()
+      .from(buildingProfessionals)
+      .where(and(eq(buildingProfessionals.buildingId, ctx.buildingId), eq(buildingProfessionals.isActive, true)))
+      .orderBy(buildingProfessionals.professionalType, buildingProfessionals.organizationName);
 
     const activity = canSeeAudit
       ? await db
@@ -130,10 +137,19 @@ export default async (req: Request) => {
           id: d.id,
           name: d.name,
           fileType: d.fileType,
+          folder: d.folder,
           access: d.access,
           updatedOn: d.updatedOn,
-          // Le contenu binaire n'est pas encore stocké (Netlify Blobs à venir).
+          // Fichier stocké dans Netlify Blobs, servi par /api/documents/:id.
           available: d.storageKey !== null,
+        })),
+        professionals: professionalRows.map((p) => ({
+          id: p.id,
+          professionalType: p.professionalType,
+          organizationName: p.organizationName,
+          contactName: p.contactName,
+          email: p.email,
+          phone: p.phone,
         })),
         activity: activity.map((a) => ({
           id: a.id,

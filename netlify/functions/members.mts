@@ -1,5 +1,5 @@
 import type { Config, Context } from "@netlify/functions";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { buildingMembers, pendingMembers, ROLES, users, type Role } from "../../db/schema.js";
 import { authorize, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
@@ -22,18 +22,6 @@ const assertAssignableRole = (value: unknown): Role => {
     throw new HttpError(422, `Rôle attendu parmi : ${ASSIGNABLE_ROLES.join(", ")}`);
   }
   return value as Role;
-};
-
-const countManagers = async (buildingId: number, excludeMemberId?: number) => {
-  const rows = await db
-    .select({ id: buildingMembers.id })
-    .from(buildingMembers)
-    .where(
-      excludeMemberId
-        ? and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.role, "manager"), ne(buildingMembers.id, excludeMemberId))
-        : and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.role, "manager")),
-    );
-  return rows.length;
 };
 
 const findMirroredAccount = async (email: string) => {
@@ -60,7 +48,7 @@ const grantMembership = async (
   const [member] = await db
     .insert(buildingMembers)
     .values({ buildingId, userId: account.id, ...input })
-    .onConflictDoUpdate({ target: [buildingMembers.buildingId, buildingMembers.userId], set: input })
+    .onConflictDoUpdate({ target: [buildingMembers.buildingId, buildingMembers.userId], set: { ...input, endedAt: null, endedReason: "" } })
     .returning();
 
   await db.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, buildingId), eq(pendingMembers.email, email)));
@@ -165,7 +153,7 @@ export default async (req: Request, context: Context) => {
         .select({ id: buildingMembers.id, userId: buildingMembers.userId, email: users.email, fullName: users.fullName, role: buildingMembers.role, unitLabel: buildingMembers.unitLabel, shareLabel: buildingMembers.shareLabel })
         .from(buildingMembers)
         .innerJoin(users, eq(buildingMembers.userId, users.id))
-        .where(eq(buildingMembers.buildingId, ctx.buildingId));
+        .where(and(eq(buildingMembers.buildingId, ctx.buildingId), isNull(buildingMembers.endedAt)));
 
       const waiting = await db.select().from(pendingMembers).where(eq(pendingMembers.buildingId, ctx.buildingId));
       const activation = await listActivationStates().catch((error) => { console.error("État d'activation Identity indisponible:", error); return null; });
@@ -265,16 +253,13 @@ export default async (req: Request, context: Context) => {
       }
 
       const role = assertAssignableRole(body.role ?? target.role);
-      if (target.role === "manager" && role !== "manager" && (await countManagers(ctx.buildingId, memberId)) === 0) throw new HttpError(409, "Impossible de retirer le dernier gestionnaire de l'immeuble");
-
       const [updated] = await db.update(buildingMembers).set({ role, unitLabel: readString(body.unitLabel, "lot", { max: 80, required: false }) || target.unitLabel, shareLabel: readString(body.shareLabel, "quotité", { max: 40, required: false }) || target.shareLabel }).where(scope).returning();
       await writeAudit(ctx, { action: "member.updated", entityType: "building_member", entityId: updated.id, summary: `Rôle du membre #${updated.id} défini à « ${updated.role} ».` });
       return Response.json({ id: updated.id, role: updated.role, unitLabel: updated.unitLabel });
     }
 
     if (req.method === "DELETE") {
-      if (target.role === "manager" && (await countManagers(ctx.buildingId, memberId)) === 0) throw new HttpError(409, "Impossible de retirer le dernier gestionnaire de l'immeuble");
-      await db.delete(buildingMembers).where(scope);
+      await db.update(buildingMembers).set({ endedAt: new Date(), endedReason: target.role === "manager" ? "mandate_ended" : "access_revoked" }).where(scope);
       await writeAudit(ctx, { action: "member.revoked", entityType: "building_member", entityId: memberId, summary: `Accès du membre #${memberId} retiré.` });
       return Response.json({ id: memberId, removed: true });
     }
