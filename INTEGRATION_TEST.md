@@ -21,7 +21,7 @@ Reconstructions historiques remplacées par leurs variantes propres, sans réimp
 
 ## Vérification
 
-`npm run check` : TypeScript, 24 tests et compilation. Ce contrôle n’est pas une validation complète des fonctions avec une base distante.
+`npm run check` : TypeScript, 25 tests et compilation. Ce contrôle n’est pas une validation complète des fonctions avec une base distante.
 
 À vérifier sur la preview avant toute promotion :
 

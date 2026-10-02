@@ -1,5 +1,6 @@
 import type { Config } from "@netlify/functions";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { documentAccessLevels } from "../lib/document-policy.mts";
 import { db } from "../../db/index.js";
 import {
   announcements, auditLog, buildingMembers, buildings, documents, events,
@@ -61,9 +62,8 @@ export default async (req: Request) => {
       .select()
       .from(documents)
       .where(
-        canSeePrivateDocs
-          ? eq(documents.buildingId, ctx.buildingId)
-          : and(eq(documents.buildingId, ctx.buildingId), eq(documents.access, "public")),
+        and(eq(documents.buildingId, ctx.buildingId), inArray(documents.access,
+          documentAccessLevels(canSeePrivateDocs, ctx.can("documents:read:owners")))),
       )
       .orderBy(desc(documents.updatedOn));
 

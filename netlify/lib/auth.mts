@@ -16,12 +16,12 @@ const ROLE_CAPABILITIES: Record<Role, readonly string[]> = {
   ],
   manager: [
     "building:read", "tickets:read:own", "tickets:read:all", "tickets:create", "tickets:update",
-    "documents:read:private", "documents:manage", "announcements:manage", "events:manage",
+    "documents:read:private", "documents:read:owners", "documents:manage", "announcements:manage", "events:manage",
     "audit:read", "terminals:manage", "members:manage", "finance:manage",
   ],
   platform_admin: [
     "building:read", "tickets:read:own", "tickets:read:all", "tickets:create", "tickets:update",
-    "documents:read:private", "documents:manage", "announcements:manage", "events:manage",
+    "documents:read:private", "documents:read:owners", "documents:manage", "announcements:manage", "events:manage",
     "audit:read", "terminals:manage", "members:manage", "finance:manage", "platform:admin",
   ],
 };

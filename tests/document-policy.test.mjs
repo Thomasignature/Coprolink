@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { documentBelongsToBuilding, documentStoreName, mayReadDocument, safeDownloadName } from '../netlify/lib/document-policy.mts'
+import { documentAccessLevels, documentBelongsToBuilding, documentStoreName, mayReadDocument, safeDownloadName } from '../netlify/lib/document-policy.mts'
 
 test('document storage keys are isolated by building', () => {
   assert.equal(documentBelongsToBuilding('buildings/12/meeting.pdf', 12), true)
@@ -31,4 +31,13 @@ test('preview document stores are isolated by branch, including long similar nam
   assert.notEqual(first, second);
   assert.ok(first.length <= 64);
   assert.equal(documentStoreName('production', 'main'), documentStoreName('production'));
+});
+test('document listings expose exactly the visibility levels that may be downloaded', () => {
+  for (const privateAccess of [false, true]) for (const ownerAccess of [false, true]) {
+    const levels = documentAccessLevels(privateAccess, ownerAccess);
+    for (const visibility of ['public', 'private', 'owners']) {
+      assert.equal(levels.includes(visibility), mayReadDocument(visibility, privateAccess, ownerAccess));
+    }
+  }
+  assert.deepEqual(documentAccessLevels(true, false), ['public', 'private']);
 });

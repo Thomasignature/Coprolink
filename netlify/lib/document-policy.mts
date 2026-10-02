@@ -18,4 +18,7 @@ export const documentBelongsToBuilding = (storageKey: string, buildingId: number
 export const mayReadDocument = (access: string, canReadPrivate: boolean, canReadOwners = false) =>
   access === "public" || (access === "owners" ? canReadOwners : canReadPrivate);
 
+export const documentAccessLevels = (canReadPrivate: boolean, canReadOwners: boolean) =>
+  ["public", ...(canReadPrivate ? ["private"] : []), ...(canReadOwners ? ["owners"] : [])];
+
 export const safeDownloadName = (value: string) => value.replace(/[\r\n"\\/]/g, "_").slice(0, 180) || "document";
