@@ -139,7 +139,9 @@ const claimPendingMemberships = async (userId: string, email: string) => {
       })
       // Une appartenance déjà accordée par ailleurs a la priorité : l'invitation
       // en attente est alors simplement consommée.
-      .onConflictDoNothing({ target: [buildingMembers.buildingId, buildingMembers.userId] });
+      // L'index partiel garantit une seule période active, tout en autorisant
+      // plusieurs périodes historiques pour la même personne.
+      .onConflictDoNothing();
 
     await db.insert(auditLog).values({
       buildingId: row.buildingId,
@@ -238,7 +240,9 @@ export const listMemberships = async (userId: string): Promise<Membership[]> => 
     })
     .from(buildingMembers)
     .innerJoin(buildings, eq(buildingMembers.buildingId, buildings.id))
-    .where(eq(buildingMembers.userId, userId));
+    // Une relation terminée est historique : elle ne doit jamais rouvrir une
+    // session ni accorder une capacité, même si le compte Identity reste actif.
+    .where(and(eq(buildingMembers.userId, userId), isNull(buildingMembers.revokedAt)));
 
   return rows.map((r) => ({ ...r, role: r.role as Role }));
 };
