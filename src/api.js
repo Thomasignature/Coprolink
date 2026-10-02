@@ -32,7 +32,8 @@ export class ApiError extends Error {
  */
 async function request(path, { method = 'GET', body, terminal = false, extraHeaders } = {}) {
   const headers = { ...extraHeaders }
-  if (body !== undefined) headers['content-type'] = 'application/json'
+  const isForm = body instanceof FormData
+  if (body !== undefined && !isForm) headers['content-type'] = 'application/json'
 
   if (terminal) {
     const token = terminalToken.read()
@@ -44,7 +45,7 @@ async function request(path, { method = 'GET', body, terminal = false, extraHead
     method,
     headers,
     credentials: 'same-origin',
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
   })
 
   if (response.status === 204) return null
@@ -58,11 +59,15 @@ async function request(path, { method = 'GET', body, terminal = false, extraHead
 
 const buildingQuery = slug => (slug ? `?building=${encodeURIComponent(slug)}` : '')
 
+export const documentDownloadUrl = (slug, id) =>
+  `/api/documents/${encodeURIComponent(id)}${buildingQuery(slug)}`
+
 export const api = {
   session: () => request('/api/session'),
   terminalSession: () => request('/api/session', { terminal: true }),
 
   workspace: slug => request(`/api/workspace${buildingQuery(slug)}`),
+  managerDashboard: () => request('/api/manager-dashboard'),
   display: () => request('/api/display', { terminal: true }),
 
   createTicket: (slug, data) =>
@@ -79,6 +84,59 @@ export const api = {
     request(`/api/announcements${buildingQuery(slug)}`, { method: 'POST', body: data }),
   createEvent: (slug, data) =>
     request(`/api/events${buildingQuery(slug)}`, { method: 'POST', body: data }),
+  updateAnnouncement: (slug, id, data) =>
+    request(`/api/announcements/${id}${buildingQuery(slug)}`, { method: 'PATCH', body: data }),
+  deleteAnnouncement: (slug, id) =>
+    request(`/api/announcements/${id}${buildingQuery(slug)}`, { method: 'DELETE' }),
+  updateEvent: (slug, id, data) =>
+    request(`/api/events/${id}${buildingQuery(slug)}`, { method: 'PATCH', body: data }),
+  deleteEvent: (slug, id) =>
+    request(`/api/events/${id}${buildingQuery(slug)}`, { method: 'DELETE' }),
+
+  /** `data` : FormData avec `file`, et facultativement `name`, `folder`, `access`. */
+  uploadDocument: (slug, data) =>
+    request(`/api/documents${buildingQuery(slug)}`, { method: 'POST', body: data }),
+  updateDocument: (slug, id, data) =>
+    request(`/api/documents/${id}${buildingQuery(slug)}`, { method: 'PATCH', body: data }),
+  deleteDocument: (slug, id) =>
+    request(`/api/documents/${id}${buildingQuery(slug)}`, { method: 'DELETE' }),
+  /** URL du fichier : la session (cookie Identity) suffit pour l'ouvrir. */
+  documentUrl: (slug, id) => `/api/documents/${id}${buildingQuery(slug)}`,
+  /** Écran des communs : le jeton passe par un en-tête, d'où un téléchargement en Blob. */
+  openTerminalDocument: async id => {
+    const token = terminalToken.read()
+    if (!token) throw new ApiError(401, 'Aucun jeton de terminal enregistré sur cet appareil')
+    // Onglet ouvert pendant le clic, sinon le bloqueur de fenêtres l'empêche après l'attente réseau.
+    const tab = window.open('', '_blank')
+    try {
+      const response = await fetch(`/api/documents/${id}`, { headers: { 'x-terminal-token': token } })
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null)
+        throw new ApiError(response.status, payload?.error || `Erreur ${response.status}`)
+      }
+      const url = URL.createObjectURL(await response.blob())
+      if (tab) tab.location.href = url
+      else location.assign(url)
+      setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    } catch (error) {
+      tab?.close()
+      throw error
+    }
+  },
+
+  finances: slug => request(`/api/finances${buildingQuery(slug)}`),
+  updateBuildingFinances: (slug, building) =>
+    request(`/api/finances${buildingQuery(slug)}`, { method: 'PATCH', body: { building } }),
+  updateMemberFinances: (slug, memberId, data) =>
+    request(`/api/finances${buildingQuery(slug)}`, { method: 'PATCH', body: { memberId, ...data } }),
+
+  listAssemblies: slug => request(`/api/assemblies${buildingQuery(slug)}`),
+  createAssembly: (slug, data) =>
+    request(`/api/assemblies${buildingQuery(slug)}`, { method: 'POST', body: { action: 'create_assembly', ...data } }),
+  addAssemblyAgendaItem: (slug, data) =>
+    request(`/api/assemblies${buildingQuery(slug)}`, { method: 'POST', body: { action: 'add_agenda_item', ...data } }),
+  respondToAssembly: (slug, data) =>
+    request(`/api/assemblies${buildingQuery(slug)}`, { method: 'POST', body: { action: 'respond', ...data } }),
 
   listTerminals: slug => request(`/api/terminals${buildingQuery(slug)}`),
   createTerminal: (slug, data) =>
@@ -110,4 +168,6 @@ export const api = {
       body: data,
       extraHeaders: setupToken ? { 'x-setup-token': setupToken } : undefined,
     }),
+  createManagedBuilding: data =>
+    request('/api/setup', { method: 'POST', body: { ...data, withSampleData: false } }),
 }
