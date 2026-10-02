@@ -470,8 +470,8 @@ function ResidentTicket({ t }) {
   const reachedLabels = new Set((t.timeline ?? []).map(s => s.label))
   const steps = [
     { label: 'Signalé', done: true },
-    { label: 'Pris en charge', done: reachedLabels.has('Pris en charge') || reachedLabels.has('En attente d\'un tiers') || reachedLabels.has('Rendez-vous confirmé') || t.status === 'resolved' },
-    { label: 'Planifié', done: reachedLabels.has('Rendez-vous confirmé') || t.status === 'resolved' },
+    { label: 'Pris en charge', done: reachedLabels.has('Pris en charge') || reachedLabels.has('En attente d\'un tiers') || (reachedLabels.has('Intervention planifiée') || reachedLabels.has('Rendez-vous confirmé')) || t.status === 'resolved' },
+    { label: 'Planifié', done: (reachedLabels.has('Intervention planifiée') || reachedLabels.has('Rendez-vous confirmé')) || t.status === 'resolved' },
     { label: 'Résolu', done: t.status === 'resolved' },
   ]
 
@@ -688,7 +688,7 @@ function SyndicDashboard({ data, counts, open, setSelected, setSection, setCompo
       <div className="manager-metrics">
         <ManagerMetric label="Nouvelles demandes" value={counts.new} helper="à qualifier" tone="blue" />
         <ManagerMetric label="En attente" value={counts.waiting} helper="d'un tiers" tone="violet" />
-        <ManagerMetric label="Planifiées" value={counts.scheduled} helper="avec date confirmée" tone="teal" />
+        <ManagerMetric label="Planifiées" value={counts.scheduled} helper="interventions à organiser" tone="teal" />
         <ManagerMetric label="Résolues" value={counts.resolved} helper="dossiers clôturés" tone="green" />
       </div>
       <div className="manager-grid">
@@ -703,7 +703,7 @@ function SyndicDashboard({ data, counts, open, setSelected, setSection, setCompo
               : open.slice(0, 4).map(t => (
                 <button key={t.reference} onClick={() => setSelected(t)}>
                   <div className="ticket-icon sm"><Wrench /></div>
-                  <div><strong>{t.title}</strong><span>{t.reference} · {t.location}</span></div>
+                  <div><strong>{t.title}</strong><span>{t.reference} · {t.location} · Priorité {priorityLabel(t.priority)}</span></div>
                   <span className={'status ' + metaFor(t.status).cls}>{metaFor(t.status).label}</span>
                   <ChevronRight />
                 </button>
@@ -738,12 +738,17 @@ function ManagerMetric({ label, value, helper, tone }) {
   return <article className={'manager-metric ' + tone}><span>{label}</span><strong>{value}</strong><small>{helper}</small></article>
 }
 
+const priorityLabel = value => ({ high: 'Haute', normal: 'Normale', low: 'Basse' }[value] || 'Normale')
+const priorityRank = value => ({ high: 0, normal: 1, low: 2 }[value] ?? 1)
+
 function SyndicTickets({ tickets, setSelected }) {
   const [filter, setFilter] = useState('all')
   const [query, setQuery] = useState('')
+  const [priority, setPriority] = useState('all')
   const visible = tickets.filter(t =>
+    (priority === 'all' || (t.priority || 'normal') === priority) &&
     (filter === 'all' || t.status === filter) &&
-    `${t.reference} ${t.title} ${t.location}`.toLowerCase().includes(query.toLowerCase()))
+    `${t.reference} ${t.title} ${t.location}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority))
 
   return (
     <>
@@ -759,6 +764,10 @@ function SyndicTickets({ tickets, setSelected }) {
           <option value="all">Tous les statuts</option>
           {Object.entries(statusMeta).map(([key, m]) => <option key={key} value={key}>{m.label}</option>)}
         </select>
+        <select value={priority} onChange={e => setPriority(e.target.value)} aria-label="Filtrer par priorité">
+          <option value="all">Toutes les priorités</option>
+          <option value="high">Priorité haute</option><option value="normal">Priorité normale</option><option value="low">Priorité basse</option>
+        </select>
       </div>
       <section className="card table-card">
         <div className="ticket-table">
@@ -767,7 +776,7 @@ function SyndicTickets({ tickets, setSelected }) {
             ? <EmptyState icon={<TicketCheck />} title="Aucun résultat" text="Aucune demande ne correspond à ce filtre." />
             : visible.map(t => (
               <button className="ticket-row" key={t.reference} onClick={() => setSelected(t)}>
-                <span><strong>{t.title}</strong><small>{t.reference} · {longDate(t.createdAt)}</small></span>
+                <span><strong>{t.title}</strong><small>{t.reference} · {longDate(t.createdAt)} · Priorité {priorityLabel(t.priority)}</small></span>
                 <span>{t.location}</span>
                 <span><i className={'status ' + metaFor(t.status).cls}>{metaFor(t.status).label}</i></span>
                 <span>{t.nextStep}</span>
@@ -844,6 +853,7 @@ function SyndicTicketDrawer({ ticket, onClose, changeStatus }) {
           <span><small>Lieu</small><strong>{ticket.location}</strong></span>
           <span><small>Signalé par</small><strong>{ticket.reporterLabel || '—'}</strong></span>
           <span><small>Créé le</small><strong>{longDate(ticket.createdAt)}</strong></span>
+          <span><small>Priorité</small><strong>{priorityLabel(ticket.priority)}</strong></span>
           <span><small>Visibilité</small><strong>{ticket.isPublic ? 'Publique' : 'Privée'}</strong></span>
         </div>
       </div>

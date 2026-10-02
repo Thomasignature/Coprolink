@@ -5,6 +5,7 @@ import {
   buildingPeople, buildingUnits, personVisibilityPreferences, unitPersonRelations,
 } from "../../db/schema-v3.js";
 import { authorizeSyndicOperator, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { matchImportPerson } from "../lib/import-matching.mts";
 import { writeAudit } from "../lib/data.mts";
 
 const PRESETS: Record<string, string[]> = {
@@ -21,7 +22,8 @@ export default async (req: Request) => {
     if (req.method !== "POST") return new Response(null, { status: 405, headers: { Allow: "POST" } });
     const ctx = await authorizeSyndicOperator(req, readBuildingSlug(req));
     const body: any = await req.json().catch(() => ({}));
-    const rows = Array.isArray(body.rows) ? body.rows.slice(0, 500) : [];
+    const rows = Array.isArray(body.rows) ? body.rows : [];
+    if (rows.length > 500) throw new HttpError(422, "Import limité à 500 lignes");
     if (!rows.length) throw new HttpError(422, "Aucune ligne à importer");
 
     const result = { unitsCreated: 0, peopleCreated: 0, relationsCreated: 0, skipped: 0, errors: [] as any[] };
@@ -33,11 +35,12 @@ export default async (req: Request) => {
       const floor = clean(raw.floor, 40);
       const email = clean(raw.email, 200).toLowerCase();
       const shareLabel = clean(raw.shareLabel, 40);
-      const preset = clean(raw.relationPreset || "occupant", 40);
+      const preset = clean(raw.relationPreset, 40);
+      const sourceRow = Number.isInteger(raw.sourceRow) && raw.sourceRow > 0 ? raw.sourceRow : index + 1;
 
-      if (!unitLabel || !fullName || !PRESETS[preset]) {
+      if (!unitLabel || !fullName || !Object.hasOwn(PRESETS, preset) || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
         result.skipped += 1;
-        result.errors.push({ row: index + 1, message: "Lot, nom ou rôle invalide" });
+        result.errors.push({ row: sourceRow, message: "Lot, nom ou rôle invalide" });
         continue;
       }
 
@@ -65,6 +68,14 @@ export default async (req: Request) => {
           [person] = await db.select().from(buildingPeople)
             .where(and(eq(buildingPeople.buildingId, ctx.buildingId), sql`lower(${buildingPeople.email}) = ${email}`)).limit(1);
         }
+        if (!person && !email) {
+          const candidates = await db.select({
+            id: buildingPeople.id, fullName: buildingPeople.fullName, email: buildingPeople.email,
+          }).from(buildingPeople).innerJoin(unitPersonRelations, eq(unitPersonRelations.personId, buildingPeople.id))
+            .where(and(eq(buildingPeople.buildingId, ctx.buildingId), eq(unitPersonRelations.unitId, unit.id),
+              sql`${unitPersonRelations.endDate} IS NULL`));
+          person = matchImportPerson(candidates, fullName);
+        }
         if (!person) {
           [person] = await db.insert(buildingPeople).values({
             buildingId: ctx.buildingId,
@@ -90,7 +101,7 @@ export default async (req: Request) => {
         }
       } catch (error: any) {
         result.skipped += 1;
-        result.errors.push({ row: index + 1, message: error?.message || "Erreur d’import" });
+        result.errors.push({ row: sourceRow, message: error?.message || "Erreur d’import" });
       }
     }
 

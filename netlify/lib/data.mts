@@ -14,11 +14,13 @@ export const STATUS_NEXT_STEP: Record<TicketStatus, string> = {
   resolved: "Dossier clôturé",
 };
 
+const STATUS_LABEL: Record<TicketStatus, string> = { new: "Nouveau", in_progress: "En cours", waiting: "En attente", scheduled: "Planifié", resolved: "Résolu" };
+
 const STATUS_TIMELINE_LABEL: Record<TicketStatus, string> = {
   new: "Signalé",
   in_progress: "Pris en charge",
   waiting: "En attente d'un tiers",
-  scheduled: "Rendez-vous confirmé",
+  scheduled: "Intervention planifiée",
   resolved: "Résolu",
 };
 
@@ -146,7 +148,7 @@ export const changeTicketStatus = async (
       action: "ticket.status_changed",
       entityType: "ticket",
       entityId: reference,
-      summary: `Le ticket ${reference} est passé de « ${existing.status} » à « ${nextStatus} ».`,
+      summary: `Le ticket ${reference} est passé de « ${STATUS_LABEL[existing.status as TicketStatus] ?? existing.status} » à « ${STATUS_LABEL[nextStatus]} ».`,
     });
   }
 

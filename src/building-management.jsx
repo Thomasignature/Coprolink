@@ -11,6 +11,8 @@ import PersonAccessControl from './person-access-control.jsx'
 import SyndicAssembliesPanel from './syndic-assemblies.jsx'
 import OnboardingImport from './onboarding-import.jsx'
 import './building-management.css'
+import EndRelationsDialog from './end-relations-dialog.jsx'
+import { directoryRows, END_REASONS, relationTypeLabel } from './people-relations.js'
 
 const RELATION_PRESETS = {
   owner: { relations: ['owner'], label: 'Copropriétaire' },
@@ -21,7 +23,11 @@ const RELATION_PRESETS = {
 
 const clean = value => String(value ?? '').trim()
 const initials = name => clean(name).split(/\s+/).filter(Boolean).map(part => part[0]).join('').slice(0, 2).toUpperCase() || '??'
-const today = () => new Date().toISOString().slice(0, 10)
+const today = () => {
+  const date = new Date()
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+const dateLabel = value => value ? new Date(`${value.slice(0, 10)}T12:00:00`).toLocaleDateString('fr-BE') : 'Début non renseigné'
 
 const floorLabel = value => {
   const raw = clean(value)
@@ -42,7 +48,7 @@ const relationPresetFor = relations => {
   return 'occupant'
 }
 
-const relationLabel = relations => RELATION_PRESETS[relationPresetFor(relations)]?.label || 'Occupant'
+const relationLabel = relations => [...new Set(relations)].map(relationTypeLabel).join(' + ') || 'Sans relation avec un lot'
 
 export default function BuildingManagementView({ session, buildingSlug, onLogout }) {
   const fallback = session.memberships.find(m => m.role === 'manager')?.buildingSlug || session.memberships[0]?.buildingSlug || ''
@@ -55,6 +61,8 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const [state, setState] = useState({ status: 'loading', workspace: null, model: null, access: [], error: null })
   const [section, setSection] = useState('overview')
   const [query, setQuery] = useState('')
+  const [peopleFilter, setPeopleFilter] = useState('current')
+  const [endingRow, setEndingRow] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
   const [showImport, setShowImport] = useState(false)
   const [actionError, setActionError] = useState('')
@@ -90,7 +98,8 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const building = workspace.building || { slug, name: membership?.buildingName || 'Copropriété', address: '', lots: 0 }
   const units = Array.isArray(model.units) ? model.units : []
   const people = Array.isArray(model.people) ? model.people : []
-  const activeRelations = (Array.isArray(model.relations) ? model.relations : []).filter(item => !item.endDate)
+  const relations = Array.isArray(model.relations) ? model.relations : []
+  const activeRelations = relations.filter(item => !item.endDate)
   const referents = (Array.isArray(model.referents) ? model.referents : []).filter(item => !item.endedAt)
   const professionals = (Array.isArray(model.professionals) ? model.professionals : []).filter(item => item.isActive !== false && !item.endedAt)
   const visibility = Array.isArray(model.visibility) ? model.visibility : []
@@ -100,7 +109,6 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const documentsCount = Array.isArray(workspace.documents) ? workspace.documents.length : 0
 
   const unitById = new Map(units.map(unit => [unit.id, unit]))
-  const personById = new Map(people.map(person => [person.id, person]))
   const visibilityByPerson = new Map(visibility.map(item => [item.personId, item]))
   const accessByPerson = new Map(access.map(item => [item.personId, item.state]))
   const referentByPerson = new Map(referents.map(item => [item.personId, item]))
@@ -120,32 +128,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const residents = people.map(personSummary)
   const referentPeople = residents.filter(person => person.isReferent)
 
-  const needle = query.trim().toLocaleLowerCase('fr-BE')
-  const directoryEntries = (() => {
-    const rows = []
-    const linked = new Set()
-    for (const unit of units) {
-      const grouped = new Map()
-      for (const rel of activeRelations.filter(item => item.unitId === unit.id)) {
-        const person = personById.get(rel.personId)
-        if (!person) continue
-        linked.add(person.id)
-        const current = grouped.get(person.id) || { person, relations: [] }
-        current.relations.push(rel)
-        grouped.set(person.id, current)
-      }
-      for (const current of grouped.values()) {
-        const types = current.relations.map(item => item.relationType)
-        const haystack = `${current.person.fullName} ${current.person.email} ${unit.label} ${unit.floor} ${relationLabel(types)}`.toLocaleLowerCase('fr-BE')
-        if (!needle || haystack.includes(needle)) rows.push({ key: `${unit.id}:${current.person.id}`, unit, person: current.person, relations: current.relations })
-      }
-    }
-    for (const person of people.filter(item => !linked.has(item.id))) {
-      const haystack = `${person.fullName} ${person.email}`.toLocaleLowerCase('fr-BE')
-      if (!needle || haystack.includes(needle)) rows.push({ key: `unlinked:${person.id}`, unit: null, person, relations: [] })
-    }
-    return rows
-  })()
+  const directoryEntries = directoryRows(units, people, relations, peopleFilter, query)
 
   const floors = (() => {
     const grouped = new Map()
@@ -204,6 +187,19 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
         if (!currentTypes.has(relationType)) await apiV3.create(slug, 'relation', { unitId, personId, relationType })
       }
     })
+  }
+
+  const endRelation = async (relation, data) => {
+    if (!isSyndicOperator) throw new Error('Seul le syndic peut clôturer une relation.')
+    const updated = await apiV3.update(slug, 'relation', relation.id, data)
+    setState(current => ({ ...current, model: { ...current.model,
+      relations: current.model.relations.map(item => item.id === relation.id ? updated : item),
+    } }))
+  }
+
+  const closeEndDialog = () => {
+    setEndingRow(null)
+    load()
   }
 
   const addPerson = async event => {
@@ -288,6 +284,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
             <div className="bm-page-head"><div><span>PERSONNES & ACCÈS</span><h2>Résidents, lots, rôles et accès CoproLink</h2><p>{isSyndicOperator ? 'Le syndic alimente les lots, personnes et accès. Les référents assurent la continuité et la gouvernance de l’immeuble.' : 'Vue de gouvernance : vous pouvez contrôler les personnes, lots et accès renseignés par le syndic. Les modifications administratives restent réservées au syndic.'}</p></div>{isSyndicOperator && <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}><button className="bm-primary" onClick={() => setShowImport(true)}><FileText /> Importer CSV</button><button className="bm-primary" onClick={() => setShowAdd(value => !value)}><Plus /> Ajouter une personne</button></div>}</div>
             <section className="bm-role-explainer"><article><UserCog /><h3>{referentPeople.length} référent{referentPeople.length > 1 ? 's' : ''}</h3><p>Les référents suivent la gouvernance et assurent la continuité de CoproLink pour l’immeuble.</p></article><article><Users /><h3>{people.length} personne{people.length > 1 ? 's' : ''}</h3><p>Copropriétaires, occupants et locataires sont reliés à leurs lots.</p></article><article><Wrench /><h3>{professionals.length} professionnel{professionals.length > 1 ? 's' : ''}</h3><p>Le syndic et les prestataires restent séparés des résidents.</p></article></section>
 
+            <div className="bm-people-filters" role="group" aria-label="Filtrer les relations">{[['current', 'Actuels'], ['former', 'Anciens'], ['all', 'Tous']].map(([key, label]) => <button type="button" key={key} aria-pressed={peopleFilter === key} className={peopleFilter === key ? 'active' : ''} onClick={() => setPeopleFilter(key)}>{label}</button>)}</div>
             <div className="bm-directory-tools"><label><Search /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Rechercher un nom, un lot, un étage…" /></label><span>{directoryEntries.length} entrée{directoryEntries.length > 1 ? 's' : ''}</span></div>
 
             {!isSyndicOperator && <section className="bm-warning"><ShieldCheck /><div><strong>Vue Référent CoproLink</strong><span>Le syndic reste responsable de l’encodage des lots, des personnes et de l’activation des accès.</span></div></section>}
@@ -316,12 +313,14 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
                     const accessState = accessByPerson.get(row.person.id) || 'none'
                     return (
                       <article key={row.key}>
-                        <label className="bm-inline-field">Lot<input defaultValue={row.unit?.label || ''} disabled={!row.unit || !isSyndicOperator} onBlur={event => isSyndicOperator && row.unit && clean(event.target.value) !== clean(row.unit.label) && runAction(() => apiV3.update(slug, 'unit', row.unit.id, { label: event.target.value }))} placeholder="4A" /></label>
-                        <div className="bm-person-main"><span className="bm-avatar">{initials(row.person.fullName)}</span><div><strong>{row.person.fullName}</strong><small>{relationLabel(types)}</small><PersonAccessControl compact readOnly={!isSyndicOperator} person={row.person} access={accessState} onSaveEmail={email => saveEmail(row.person, email)} onInvite={() => invitePerson(row.person)} /></div></div>
-                        <label className="bm-inline-field">Étage<input defaultValue={row.unit?.floor || ''} disabled={!row.unit || !isSyndicOperator} onBlur={event => isSyndicOperator && row.unit && clean(event.target.value) !== clean(row.unit.floor) && runAction(() => apiV3.update(slug, 'unit', row.unit.id, { floor: event.target.value }))} placeholder="4" /></label>
-                        <label className="bm-select-label">Lien<select disabled={!row.unit || !isSyndicOperator} value={relationPresetFor(types)} onChange={event => isSyndicOperator && row.unit && setRelationPreset(row.person.id, row.unit.id, event.target.value)}>{Object.entries(RELATION_PRESETS).map(([key, value]) => <option value={key} key={key}>{value.label}</option>)}</select></label>
-                        <div className="bm-visibility"><label className="bm-check"><input type="checkbox" checked={prefs.directoryVisible !== false} disabled={!isSyndicOperator} onChange={event => isSyndicOperator && runAction(() => apiV3.update(slug, 'person', row.person.id, { directoryVisible: event.target.checked }))} /> Annuaire privé</label><label className="bm-check"><input type="checkbox" checked={prefs.hallVisible === true} disabled={!isSyndicOperator} onChange={event => isSyndicOperator && runAction(() => apiV3.update(slug, 'person', row.person.id, { hallVisible: event.target.checked }))} /> Écran / hall</label></div>
-                        <label className="bm-check"><input type="checkbox" checked={referentByPerson.has(row.person.id)} disabled={!isSyndicOperator} onChange={event => isSyndicOperator && toggleReferent(row.person.id, event.target.checked)} /> Référent</label>
+                        <label className="bm-inline-field">Lot<input defaultValue={row.unit?.label || ''} disabled={row.historical || !row.unit || !isSyndicOperator} onBlur={event => isSyndicOperator && row.unit && clean(event.target.value) !== clean(row.unit.label) && runAction(() => apiV3.update(slug, 'unit', row.unit.id, { label: event.target.value }))} placeholder="4A" /></label>
+                        <div className="bm-person-main"><span className="bm-avatar">{initials(row.person.fullName)}</span><div><strong>{row.person.fullName}</strong><small>{relationLabel(types)} · {row.historical ? 'Ancienne relation' : row.relations.length ? 'Relation active' : 'Sans lot'}</small><PersonAccessControl compact readOnly={row.historical || !isSyndicOperator} person={row.person} access={accessState} onSaveEmail={email => saveEmail(row.person, email)} onInvite={() => invitePerson(row.person)} /></div></div>
+                        <label className="bm-inline-field">Étage<input defaultValue={row.unit?.floor || ''} disabled={row.historical || !row.unit || !isSyndicOperator} onBlur={event => isSyndicOperator && row.unit && clean(event.target.value) !== clean(row.unit.floor) && runAction(() => apiV3.update(slug, 'unit', row.unit.id, { floor: event.target.value }))} placeholder="4" /></label>
+                        <label className="bm-select-label">Lien<select disabled={row.historical || !row.unit || !isSyndicOperator} value={relationPresetFor(types)} onChange={event => isSyndicOperator && row.unit && setRelationPreset(row.person.id, row.unit.id, event.target.value)}>{Object.entries(RELATION_PRESETS).map(([key, value]) => <option value={key} key={key}>{value.label}</option>)}</select></label>
+                        <div className="bm-visibility"><label className="bm-check"><input type="checkbox" checked={prefs.directoryVisible !== false} disabled={row.historical || !isSyndicOperator} onChange={event => isSyndicOperator && runAction(() => apiV3.update(slug, 'person', row.person.id, { directoryVisible: event.target.checked }))} /> Annuaire privé</label><label className="bm-check"><input type="checkbox" checked={prefs.hallVisible === true} disabled={row.historical || !isSyndicOperator} onChange={event => isSyndicOperator && runAction(() => apiV3.update(slug, 'person', row.person.id, { hallVisible: event.target.checked }))} /> Écran / hall</label></div>
+                        <label className="bm-check"><input type="checkbox" checked={referentByPerson.has(row.person.id)} disabled={row.historical || !isSyndicOperator} onChange={event => isSyndicOperator && toggleReferent(row.person.id, event.target.checked)} /> Référent</label>
+                        {isSyndicOperator && !row.historical && row.relations.length > 0 && <button type="button" className="bm-end-action" onClick={() => setEndingRow(row)} aria-label={`Mettre fin à la relation de ${row.person.fullName}, lot ${row.unit?.label}`}>Mettre fin à la relation</button>}
+                        {row.relations.length > 0 && <div className="bm-relation-history">{row.relations.map(rel => <span key={rel.id}>{relationTypeLabel(rel.relationType)} : {dateLabel(rel.startDate)} → {rel.endDate ? dateLabel(rel.endDate) : 'En cours'}{rel.endDate && ` · ${END_REASONS[rel.endReason] || rel.endReason || 'Motif non renseigné'}`}</span>)}</div>}
                       </article>
                     )
                   })}</div>
@@ -332,6 +331,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
           </div>
         )}
       </section>
+      {endingRow && isSyndicOperator && <EndRelationsDialog row={endingRow} relations={relations} today={today()} onClose={closeEndDialog} onEnd={endRelation} />}
       {showImport && isSyndicOperator && <OnboardingImport buildingSlug={slug} onClose={() => setShowImport(false)} onImported={load} />}
     </main>
   )
