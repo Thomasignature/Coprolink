@@ -33,6 +33,17 @@ export class IdentityEmailTakenError extends Error {
   }
 }
 
+export class IdentityAccountMissingError extends HttpError {
+  constructor(email: string) {
+    super(
+      409,
+      `Aucun compte d'authentification n'existe pour ${email} : aucun e-mail n'a été envoyé. ` +
+        `Retirez puis invitez à nouveau cette personne.`,
+    );
+    this.name = "IdentityAccountMissingError";
+  }
+}
+
 export class IdentityRateLimitError extends Error {
   constructor() {
     super("Trop de demandes d'e-mail Identity ont été effectuées récemment.");
@@ -91,10 +102,35 @@ const listIdentityUsers = async (): Promise<User[]> => {
   return users;
 };
 
+const findIdentityUser = async (email: string): Promise<User | null> => {
+  const needle = email.trim().toLowerCase();
+  return (await listIdentityUsers()).find((u) => (u.email ?? "").toLowerCase() === needle) ?? null;
+};
+
 export const findAccountByEmail = async (email: string): Promise<IdentityAccount | null> => {
-  const needle = email.toLowerCase();
-  const match = (await listIdentityUsers()).find((u) => (u.email ?? "").toLowerCase() === needle);
+  const match = await findIdentityUser(email);
   return match ? toAccount(match) : null;
+};
+
+/**
+ * Adresse exacte sous laquelle Identity connaît ce compte.
+ *
+ * GoTrue compare l'e-mail de `/recover` à la casse près et répond 200 sans rien
+ * envoyer lorsqu'aucun compte ne correspond. CoproLink normalise les adresses
+ * en minuscules alors qu'une inscription conserve la casse saisie : il faut donc
+ * renvoyer l'adresse telle qu'elle est stockée, sinon l'e-mail part dans le vide.
+ */
+const resolveStoredEmail = async (email: string): Promise<string> => {
+  let match: User | null;
+  try {
+    match = await findIdentityUser(email);
+  } catch (error) {
+    if (!(error instanceof IdentityAdminUnavailableError)) throw error;
+    console.warn("Adresse Identity non vérifiable, envoi avec l'adresse fournie:", error.detail);
+    return email;
+  }
+  if (!match?.email) throw new IdentityAccountMissingError(email);
+  return match.email;
 };
 
 export const lookupAccountByEmail = async (
@@ -124,13 +160,14 @@ export const listActivationStates = async (): Promise<Map<string, boolean>> => {
  */
 export const sendAccountActivationLink = async (email: string): Promise<void> => {
   const url = requireIdentityUrl();
+  const storedEmail = await resolveStoredEmail(email);
 
   let response: Response;
   try {
     response = await fetch(`${url}/recover`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email: storedEmail }),
     });
   } catch (error) {
     throw new IdentityAdminUnavailableError(describeFailure(error));

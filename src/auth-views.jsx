@@ -75,7 +75,7 @@ export function LoginView({ mode: initialMode = 'login', inviteToken = null, onA
     }
     if (mode === 'signup') {
       return run(async () => {
-        await signup(email.trim(), password, { full_name: fullName.trim() })
+        await signup(email.trim().toLowerCase(), password, { full_name: fullName.trim() })
         // Sans auto-confirmation, aucune session n'est ouverte : la personne doit
         // d'abord cliquer le lien reçu par e-mail. `onAuthenticated` renvoie donc
         // false et l'on reste sur le formulaire de connexion.
