@@ -1,5 +1,5 @@
 import type { Config } from "@netlify/functions";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { buildingMembers, pendingMembers, users } from "../../db/schema.js";
 import { buildingPeople, unitPersonRelations, buildingUnits } from "../../db/schema-v3.js";
@@ -7,11 +7,15 @@ import { authorizeCoproLinkAdmin, authorizeSyndicOperator, HttpError, jsonError,
 import {
   IdentityAdminUnavailableError,
   IdentityEmailTakenError,
+  IdentityRateLimitError,
+  findAccountByEmail,
   inviteAccount,
   lookupAccountByEmail,
+  sendAccountActivationLink,
   type IdentityAccount,
 } from "../lib/identity.mts";
 import { writeAudit } from "../lib/data.mts";
+import { deliverPersonInvitation } from "../lib/person-invitation.mts";
 
 const findMirroredAccount = async (email: string) => {
   const [row] = await db.select().from(users).where(sql`lower(${users.email}) = ${email}`).limit(1);
@@ -42,19 +46,18 @@ export default async (req: Request) => {
 
     if (req.method === "GET") {
       const people = await db.select().from(buildingPeople).where(eq(buildingPeople.buildingId, ctx.buildingId));
-      const members = await db.select({ userId: buildingMembers.userId }).from(buildingMembers).where(eq(buildingMembers.buildingId, ctx.buildingId));
-      const memberIds = new Set(members.map((row) => row.userId));
-      const pending = await db.select({ email: pendingMembers.email }).from(pendingMembers).where(eq(pendingMembers.buildingId, ctx.buildingId));
-      const pendingEmails = new Set(pending.map((row) => row.email.toLowerCase()));
+      const members = await db.select({ userId: buildingMembers.userId, lastSeenAt: users.lastSeenAt }).from(buildingMembers)
+        .innerJoin(users, eq(buildingMembers.userId, users.id))
+        .where(and(eq(buildingMembers.buildingId, ctx.buildingId), isNull(buildingMembers.endedAt)));
+      const memberStates = new Map(members.map((row) => [row.userId, row.lastSeenAt ? "active" : "pending"]));
+      const pending = await db.select({ email: pendingMembers.email, invitationSent: pendingMembers.invitationSent }).from(pendingMembers).where(eq(pendingMembers.buildingId, ctx.buildingId));
+      const pendingStates = new Map(pending.map((row) => [row.email.toLowerCase(), row.invitationSent ? "pending" : "prepared"]));
 
       return Response.json({
         access: people.map((person) => ({
           personId: person.id,
-          state: person.userId && memberIds.has(person.userId)
-            ? "active"
-            : person.email && pendingEmails.has(person.email.toLowerCase())
-              ? "pending"
-              : "none",
+          state: (person.userId && memberStates.get(person.userId))
+            || pendingStates.get(person.email.toLowerCase()) || "none",
         })),
       }, { headers: { "cache-control": "no-store" } });
     }
@@ -70,50 +73,20 @@ export default async (req: Request) => {
     if (!person) throw new HttpError(404, "Personne introuvable");
 
     const email = person.email.trim().toLowerCase();
-    if (!email) throw new HttpError(422, "Ajoutez d’abord une adresse e-mail à cette personne");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(422, "Ajoutez une adresse e-mail valide à cette personne");
 
     const unit = await unitForPerson(ctx.buildingId, person.id);
     const membership = { role: "resident" as const, unitLabel: unit.label || "", shareLabel: unit.shareLabel || "" };
 
     const mirrored = await findMirroredAccount(email);
     const lookup = mirrored ? { account: null, unavailable: null } : await lookupAccountByEmail(email);
-    let account: IdentityAccount | null = mirrored
+    const knownAccount: IdentityAccount | null = mirrored
       ? { id: mirrored.id, email: mirrored.email, fullName: mirrored.fullName, activated: mirrored.lastSeenAt !== null }
       : lookup.account;
-    let invited = false;
-
-    if (!account) {
-      try {
-        account = await inviteAccount(email, person.fullName);
-        invited = true;
-      } catch (error) {
-        if (!(error instanceof IdentityEmailTakenError) && !(error instanceof IdentityAdminUnavailableError)) throw error;
-      }
-    }
-
-    if (!account) {
-      const [pending] = await db.insert(pendingMembers).values({
-        buildingId: ctx.buildingId,
-        email,
-        fullName: person.fullName,
-        role: membership.role,
-        unitLabel: membership.unitLabel,
-        shareLabel: membership.shareLabel,
-        invitationSent: false,
-        invitedByUserId: ctx.principal.userId,
-      }).onConflictDoUpdate({
-        target: [pendingMembers.buildingId, pendingMembers.email],
-        set: { fullName: person.fullName, role: membership.role, unitLabel: membership.unitLabel, shareLabel: membership.shareLabel },
-      }).returning();
-
-      await writeAudit(ctx, {
-        action: "access.prepared",
-        entityType: "building_person",
-        entityId: person.id,
-        summary: `Accès CoproLink préparé pour ${email}.`,
-      });
-      return Response.json({ state: "pending", pendingId: pending.id, message: `Accès préparé pour ${email}. Il s’activera lors de sa première connexion.` }, { status: 202 });
-    }
+    const { account, invited } = await deliverPersonInvitation(email, person.fullName, knownAccount, {
+      invite: inviteAccount, find: findAccountByEmail, resend: sendAccountActivationLink,
+      isDuplicate: error => error instanceof IdentityEmailTakenError,
+    });
 
     await mirrorAccount(account, email, person.fullName);
     await db.insert(buildingMembers).values({ buildingId: ctx.buildingId, userId: account.id, ...membership })
@@ -122,24 +95,32 @@ export default async (req: Request) => {
         set: { ...membership, endedAt: null, endedReason: "" },
       });
     await linkBuildingPersonAccount(ctx.buildingId, email, account.id);
+    await db.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, ctx.buildingId), eq(pendingMembers.email, email)));
 
     await writeAudit(ctx, {
-      action: invited ? "access.invited" : "access.granted",
+      action: invited ? "access.invited" : "access.resent",
       entityType: "building_person",
       entityId: person.id,
-      summary: invited ? `Invitation CoproLink envoyée à ${email}.` : `Accès CoproLink accordé à ${email}.`,
+      summary: invited ? `Invitation CoproLink demandée pour ${email}.` : `Lien d’accès CoproLink demandé pour ${email}.`,
     });
 
     return Response.json({
       state: account.activated ? "active" : "pending",
       invited,
+      emailSent: true,
       message: invited
         ? `Invitation CoproLink envoyée à ${email}.`
         : account.activated
-          ? `${email} a maintenant accès à CoproLink.`
-          : `Accès préparé pour ${email}. Le compte doit encore être activé.`,
+          ? `Lien de connexion envoyé à ${email}.`
+          : `Nouveau lien d’activation envoyé à ${email}.`,
     }, { status: 201 });
   } catch (error) {
+    if (error instanceof IdentityAdminUnavailableError) {
+      return jsonError(new HttpError(503, "Le service d’invitation est indisponible. Aucun envoi confirmé. Réessayez plus tard ou vérifiez la configuration Netlify Identity."));
+    }
+    if (error instanceof IdentityRateLimitError) {
+      return jsonError(new HttpError(429, "Trop de demandes d’e-mail. Patientez quelques minutes avant de renvoyer le lien."));
+    }
     return jsonError(error);
   }
 };

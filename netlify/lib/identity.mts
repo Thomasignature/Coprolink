@@ -170,6 +170,8 @@ export const inviteAccount = async (email: string, fullName: string): Promise<Id
     const detail = (await response.json().catch(() => null)) as { msg?: string } | null;
     const message = detail?.msg ?? "";
 
+    if (response.status === 429 || /rate limit|too many/i.test(message)) throw new IdentityRateLimitError();
+
     if (/already|exist|registered|taken/i.test(message)) throw new IdentityEmailTakenError(email);
 
     if (response.status === 401 || response.status === 403 || response.status >= 500) {
