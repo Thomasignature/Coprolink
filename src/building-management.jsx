@@ -59,7 +59,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const isAllowed = isSyndicOperator || isReferent
 
   const [state, setState] = useState({ status: 'loading', workspace: null, model: null, access: [], error: null })
-  const [section, setSection] = useState('overview')
+  const [section, setSection] = useState(() => new URLSearchParams(location.hash.split('?')[1] || '').get('section') === 'people' ? 'people' : 'overview')
   const [adding, setAdding] = useState(false)
   const [query, setQuery] = useState('')
   const [peopleFilter, setPeopleFilter] = useState('current')

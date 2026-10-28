@@ -43,7 +43,7 @@ export default function PersonAccessControl({ person, access = 'none', onSaveEma
       ) : editing ? (
         <div className="pac-editor">
           <Mail />
-          <input value={email} onChange={e => setEmail(e.target.value)} type="email" placeholder="nom@exemple.be" autoFocus />
+          <input value={email} onChange={e => setEmail(e.target.value)} type="email" aria-label={`E-mail de ${person.fullName}`} placeholder="nom@exemple.be" autoFocus />
           <button type="button" onClick={save} disabled={busy} title="Enregistrer"><Check /></button>
           <button type="button" onClick={() => { setEditing(false); setEmail(person.email || ''); setError('') }} disabled={busy} title="Annuler"><X /></button>
         </div>

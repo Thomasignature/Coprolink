@@ -6,6 +6,7 @@ import {
   WalletCards, Wrench, X,
 } from 'lucide-react'
 import { api } from './api.js'
+import SyndicPeopleAccess from './syndic-people-access.jsx'
 import { dayAndTime, dayNumber, longDate, metaFor, money, monthShort, roleLabel, shortDate, statusMeta, timelineDate } from './format.js'
 
 export function Logo({ compact = false }) {
@@ -791,7 +792,7 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
           )}
           {section === 'finance' && <SyndicFinance actions={actions} setToast={setToast} />}
           {section === 'terminals' && <TerminalsPanel actions={actions} setToast={setToast} />}
-          {section === 'members' && <MembersPanel actions={actions} setToast={setToast} />}
+          {section === 'members' && <MembersPanel buildingSlug={data.building.slug} actions={actions} setToast={setToast} />}
         </div>
       </section>
       {current && <SyndicTicketDrawer ticket={current} onClose={() => setSelected(null)} changeStatus={changeStatus} />}
@@ -1335,7 +1336,7 @@ function MemberFinanceRow({ member, actions, setToast, onSaved }) {
   )
 }
 
-function MembersPanel({ actions, setToast }) {
+function MembersPanel({ buildingSlug, actions, setToast }) {
   const [state, setState] = useState({
     loading: true, error: null, members: [], pending: [], roles: [], identityAdminAvailable: true,
   })
@@ -1414,6 +1415,8 @@ function MembersPanel({ actions, setToast }) {
                première connexion avec cette adresse, via « Créer un compte » sur l'écran de connexion.`}
         </span>
       </div>
+
+      <SyndicPeopleAccess buildingSlug={buildingSlug} onAccessChanged={reload} />
 
       <section className="card">
         <div className="card-head"><div><span className="overline">Nouvel accès</span><h3>Inviter un copropriétaire</h3></div></div>
@@ -1504,8 +1507,7 @@ function MembersPanel({ actions, setToast }) {
                         {m.activated === false ? ' · invitation non encore acceptée' : ''}
                       </small>
                     </div>
-                    {m.activated === false && (
-                      <button
+                    <button
                         className="ghost-btn" disabled={rowBusy !== null}
                         onClick={() => runRow(`resend-${m.id}`, async () => {
                           try {
@@ -1514,8 +1516,7 @@ function MembersPanel({ actions, setToast }) {
                           } catch (error) { setToast(error.message) }
                           reload()
                         })}
-                      ><Mail size={16} /> Renvoyer</button>
-                    )}
+                      ><Mail size={16} /> {m.activated === false ? 'Renvoyer l’invitation' : 'Envoyer un lien d’accès'}</button>
                     <select
                       value={m.role}
                       aria-label={`Rôle de ${m.email}`} disabled={rowBusy !== null}

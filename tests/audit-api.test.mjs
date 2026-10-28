@@ -193,6 +193,35 @@ test('audit APIs: real policies, migrations, ownership periods and revocation', 
         assert.equal(status.notifications.filter(n=>n.status==='cancelled').length,1)
       } finally { globalThis.fetch=originalFetch; globalThis.Netlify.env.get=()=>undefined }
     })
+    await t.test('syndic account links work for activated and unactivated accounts without changing roles', async () => {
+      as('manager')
+      const { rows: [building] } = await pg.query("INSERT INTO buildings(slug,name) VALUES ('access-qa','Access QA') RETURNING id")
+      await pg.query("INSERT INTO users(id,email,full_name) VALUES ('mail-qa','mail-qa@example.invalid','Mail QA')")
+      await pg.query("INSERT INTO building_members(building_id,user_id,role) VALUES ($1,'manager','manager'),($1,'mail-qa','resident')", [building.id])
+      const { rows: [member] } = await pg.query("SELECT id FROM building_members WHERE user_id='mail-qa'")
+      const account = { id: 'mail-qa', email: 'mail-qa@example.invalid', confirmedAt: '2026-01-01T00:00:00Z' }
+      globalThis.__coprolinkAuditIdentity = { config: { url: 'https://identity.invalid', token: 'operator-test' }, listUsers: async () => [account] }
+      const originalFetch = globalThis.fetch
+      const calls = []
+      globalThis.fetch = async (url, options) => { calls.push([String(url), JSON.parse(options.body).email]); return Response.json({}) }
+      try {
+        let response = await call('members', 'PATCH', { resendInvite: true }, { id: String(member.id) }, 'access-qa')
+        assert.equal(response.status, 200)
+        const active = await response.json()
+        assert.equal(active.deliveryConfirmed, false)
+        assert.match(active.message, /réinitialisation/)
+        account.confirmedAt = null
+        response = await call('members', 'PATCH', { resendInvite: true }, { id: String(member.id) }, 'access-qa')
+        assert.equal(response.status, 200)
+        assert.match((await response.json()).message, /activation/)
+        assert.deepEqual(calls, Array(2).fill(['https://identity.invalid/recover', 'mail-qa@example.invalid']))
+        assert.equal((await pg.query("SELECT role FROM building_members WHERE id=$1", [member.id])).rows[0].role, 'resident')
+        globalThis.fetch = async () => Response.json({ msg: 'rate limit' }, { status: 429 })
+        assert.equal((await call('members', 'PATCH', { resendInvite: true }, { id: String(member.id) }, 'access-qa')).status, 429)
+        as('tenant')
+        assert.equal((await call('members', 'PATCH', { resendInvite: true }, { id: String(member.id) }, 'access-qa')).status, 403)
+      } finally { globalThis.fetch = originalFetch; delete globalThis.__coprolinkAuditIdentity; as('manager') }
+    })
     await t.test('person invitations ask Identity, never claim delivery and attach the right lot', async () => {
       as('manager')
       const identity = { accounts: [], calls: [], fail: null }
