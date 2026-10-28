@@ -3,13 +3,18 @@ import { acceptInvite, login, requestPasswordRecovery, signup, updateUser } from
 import { Building2, Check, Gauge, Info, LogOut, Mail, ShieldCheck } from 'lucide-react'
 import { Logo } from './views.jsx'
 
-const messageFor = error => {
+export const LINK_INVALID_MESSAGE = 'Ce lien n’est plus valide (expiré ou déjà utilisé). Demandez un nouveau lien ci-dessous ou auprès de votre syndic.'
+
+export const messageFor = (error, mode = 'login') => {
   const text = String(error?.message || '')
+  if (/failed to fetch|networkerror|load failed/i.test(text)) return 'Connexion impossible. Vérifiez votre réseau et réessayez.'
+  // A link token fails with varied provider messages ("User not found", "invalid token"…).
+  if ((mode === 'invite' || mode === 'reset') && /expired|invalid|not found|token|404|401/i.test(text)) return LINK_INVALID_MESSAGE
+  if (/expired|invalid.*token|token.*invalid/i.test(text)) return 'Ce lien a expiré. Demandez-en un nouveau.'
   if (/invalid|credential|grant/i.test(text)) return 'E-mail ou mot de passe incorrect.'
   if (/already (been )?registered|exists/i.test(text)) return 'Un compte existe déjà pour cette adresse.'
   if (/signup.*disabled|disabled.*signup/i.test(text)) return "Les inscriptions libres sont désactivées : demandez une invitation au syndic."
   if (/password/i.test(text) && /short|least/i.test(text)) return 'Le mot de passe doit contenir au moins 8 caractères.'
-  if (/expired|invalid.*token|token.*invalid/i.test(text)) return 'Ce lien a expiré. Demandez-en un nouveau.'
   if (/identity/i.test(text)) return "L'authentification n'est pas encore activée sur ce déploiement."
   return text || 'Une erreur est survenue.'
 }
@@ -42,13 +47,13 @@ function AuthFrame({ children }) {
  * transite jamais par nos propres fonctions, et le cookie `nf_jwt` posé ici est
  * ce que le serveur vérifie ensuite pour chaque appel d'API.
  */
-export function LoginView({ mode: initialMode = 'login', inviteToken = null, onAuthenticated }) {
+export function LoginView({ mode: initialMode = 'login', inviteToken = null, initialError = '', onAuthenticated }) {
   const [mode, setMode] = useState(initialMode)
   const [email, setEmail] = useState('')
   const [fullName, setFullName] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
+  const [error, setError] = useState(initialError)
   const [notice, setNotice] = useState('')
 
   const run = async action => {
@@ -58,7 +63,7 @@ export function LoginView({ mode: initialMode = 'login', inviteToken = null, onA
     try {
       await action()
     } catch (e) {
-      setError(messageFor(e))
+      setError(messageFor(e, mode))
     } finally {
       setBusy(false)
     }
@@ -75,7 +80,7 @@ export function LoginView({ mode: initialMode = 'login', inviteToken = null, onA
     }
     if (mode === 'signup') {
       return run(async () => {
-        await signup(email.trim(), password, { full_name: fullName.trim() })
+        await signup(email.trim().toLowerCase(), password, { full_name: fullName.trim() })
         // Sans auto-confirmation, aucune session n'est ouverte : la personne doit
         // d'abord cliquer le lien reçu par e-mail. `onAuthenticated` renvoie donc
         // false et l'on reste sur le formulaire de connexion.
@@ -96,7 +101,9 @@ export function LoginView({ mode: initialMode = 'login', inviteToken = null, onA
       // choisi ici crée le compte et ouvre la session.
       return run(async () => {
         await acceptInvite(inviteToken, password)
-        await onAuthenticated()
+        // The token is now consumed: never resubmit it if loading the session fails.
+        setMode('login')
+        if (!(await onAuthenticated())) setNotice('Mot de passe enregistré. Connectez-vous avec votre adresse e-mail.')
       })
     }
     // Récupération : `handleAuthCallback` a déjà ouvert la session, il reste à
@@ -169,6 +176,12 @@ export function LoginView({ mode: initialMode = 'login', inviteToken = null, onA
               <button type="button" onClick={() => { setMode('forgot'); setError('') }}>Mot de passe oublié ?</button>
             </>
           )}
+          {(mode === 'invite' || mode === 'reset') && (
+            <>
+              <button type="button" onClick={() => { setMode('forgot'); setError('') }}>Recevoir un nouveau lien</button>
+              <button type="button" onClick={() => { setMode('login'); setError('') }}>Retour à la connexion</button>
+            </>
+          )}
           {mode !== 'login' && mode !== 'reset' && mode !== 'invite' && (
             <button type="button" onClick={() => { setMode('login'); setError('') }}>Retour à la connexion</button>
           )}
@@ -181,8 +194,8 @@ export function LoginView({ mode: initialMode = 'login', inviteToken = null, onA
 /**
  * Écran affiché à un compte authentifié qui n'est membre d'aucun immeuble.
  *
- * Deux cas : la plateforme est vierge et cette personne installe le premier
- * immeuble, ou son accès doit encore être accordé par un syndic.
+ * Deux cas : la plateforme est vierge et le syndic installe le premier
+ * immeuble, ou l'accès de la personne doit encore être accordé par un syndic.
  */
 export function SetupView({ onCreated, onLogout, email }) {
   const [name, setName] = useState('')
@@ -191,7 +204,7 @@ export function SetupView({ onCreated, onLogout, email }) {
   const [managerName, setManagerName] = useState('')
   const [emergencyPhone, setEmergencyPhone] = useState('')
   const [setupToken, setSetupToken] = useState('')
-  const [withSampleData, setWithSampleData] = useState(true)
+  const [withSampleData, setWithSampleData] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -219,11 +232,11 @@ export function SetupView({ onCreated, onLogout, email }) {
   return (
     <AuthFrame>
       <form className="auth-form wide" onSubmit={submit}>
-        <span className="overline">Première installation</span>
-        <h2>Créer votre immeuble</h2>
+        <span className="overline">Onboarding syndic</span>
+        <h2>Initialiser une copropriété</h2>
         <p className="muted-p">
-          Vous serez enregistré comme gestionnaire de cet immeuble et pourrez ensuite
-          accorder l'accès aux copropriétaires.
+          Le syndic initialise l’immeuble, renseigne les lots et les personnes puis
+          invite les copropriétaires et occupants. L’espace CoproLink reste attaché à l’immeuble.
         </p>
 
         {error && <div className="form-error" role="alert">{error}</div>}
@@ -241,11 +254,11 @@ export function SetupView({ onCreated, onLogout, email }) {
         </label>
         <label className="checkbox">
           <input type="checkbox" checked={withSampleData} onChange={e => setWithSampleData(e.target.checked)} />
-          Préremplir avec quelques exemples pour découvrir l'interface
+          Ajouter des données de démonstration (désactivé pour un test grandeur nature)
         </label>
 
         <button className="primary-btn full-btn" disabled={busy}>
-          <Building2 /> {busy ? 'Création…' : "Créer l'immeuble"}
+          <Building2 /> {busy ? 'Création…' : "Initialiser la copropriété"}
         </button>
         <div className="auth-links">
           <span className="subtle">Connecté en tant que {email}</span>

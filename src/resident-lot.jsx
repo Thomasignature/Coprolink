@@ -1,15 +1,19 @@
-import React from 'react'
+import React, { useState } from 'react'
+import { amountIsKnown, residentProfile } from './resident-utils.js'
 import { Building2, DoorOpen, FileText, ShieldCheck, WalletCards, Wrench } from 'lucide-react'
 import { money } from './format.js'
 import './resident-lot.css'
 
 export default function ResidentLotView({ data, previewRole = null }) {
-  const isTenant = previewRole === 'tenant'
-  const member = data.member || null
+  const { owner } = residentProfile(data, previewRole)
+  const lots = Array.isArray(data.lots) ? data.lots : data.member ? [data.member] : []
+  const [selectedId, setSelectedId] = useState('')
+  const member = lots.find(lot => String(lot.id) === selectedId) || lots[0] || null
+  const isTenant = !owner || (member?.relationTypes && !member.relationTypes.includes('owner'))
   const unitLabel = member?.unitLabel?.trim() || ''
   const shareLabel = member?.shareLabel?.trim() || ''
-  const hasQuarterlyCall = Number.isFinite(Number(member?.quarterlyCall)) && Number(member?.quarterlyCall) !== 0
-  const hasBalance = Number.isFinite(Number(member?.balance)) && Number(member?.balance) !== 0
+  const hasQuarterlyCall = amountIsKnown(member?.quarterlyCall)
+  const hasBalance = amountIsKnown(member?.balance)
 
   return (
     <div className="rm-content">
@@ -21,6 +25,7 @@ export default function ResidentLotView({ data, previewRole = null }) {
           : 'Les informations personnelles liées à votre lot dans la copropriété.'}</p>
       </div>
 
+      {lots.length > 1 && <label className="rl-lot-select">Choisir un lot<select aria-label="Choisir un lot" value={member?.id || ''} onChange={event => setSelectedId(event.target.value)}>{lots.map(lot => <option key={lot.id} value={lot.id}>Lot {lot.unitLabel}</option>)}</select></label>}
       <section className="rl-identity-card">
         <span className="rl-icon"><DoorOpen /></span>
         <div>

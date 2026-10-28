@@ -24,15 +24,17 @@ export default async (req: Request, context: Context) => {
 
       const body = await req.json().catch(() => ({}));
       const category = readString(body.category, "catégorie", { max: 60 });
+      const priority = ["low", "normal", "high"].includes(body.priority) ? body.priority : "normal";
 
       const ticket = await createTicket(ctx, {
         title: readString(body.title, "titre", { max: 120, required: false }) || category,
         category,
         location: readString(body.location, "emplacement", { max: 120 }),
         description: readString(body.description, "description", { max: 1000 }),
+        priority,
         // Un terminal ne choisit pas la visibilité : un signalement fait dans les
         // communs concerne les communs et suit donc le canal public.
-        isPublic: ctx.principal.kind === "terminal" ? true : body.isPublic !== false,
+        isPublic: ctx.principal.kind === "terminal" ? true : body.isPublic === true,
       });
 
       const timelines = await loadTicketTimeline([ticket.id]);
@@ -52,7 +54,7 @@ export default async (req: Request, context: Context) => {
       const status = assertTicketStatus(body.status);
       const note = readString(body.note, "note", { max: 500, required: false });
 
-      const ticket = await changeTicketStatus(ctx, reference, status, note);
+      const ticket = await changeTicketStatus(ctx, reference, status, note, { scheduledOn: body.scheduledOn, scheduledTime: body.scheduledTime });
       const timelines = await loadTicketTimeline([ticket.id]);
       return Response.json(serializeTicket(ticket, timelines.get(ticket.id) ?? []));
     }

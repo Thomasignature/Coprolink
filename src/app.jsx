@@ -1,10 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { handleAuthCallback, logout, onAuthChange } from '@netlify/identity'
 import { api, ApiError, terminalToken } from './api.js'
-import { LoginView, NoAccessView, SetupView, TerminalEnrollView } from './auth-views.jsx'
+import { LINK_INVALID_MESSAGE, LoginView, NoAccessView, SetupView, TerminalEnrollView } from './auth-views.jsx'
 import { DisplayView, ErrorPanel, Spinner, SyndicView } from './views.jsx'
 import ManagerPortfolioView from './manager-portfolio.jsx'
 import ResidentV2View from './resident-v2.jsx'
+import BuildingManagementView from './building-management.jsx'
 
 /* ------------------------------------------------------------------ *
  * Routage par hash.
@@ -57,9 +58,10 @@ const useToast = () => {
 
 export default function App() {
   const route = useRoute()
+  const routeBuilding = route.params.get('building')
   const [toast, setToast] = useToast()
 
-  const [authCallback, setAuthCallback] = useState({ done: false, mode: null, inviteToken: null })
+  const [authCallback, setAuthCallback] = useState({ done: false, mode: null, inviteToken: null, linkError: '' })
   const [session, setSession] = useState({ status: 'loading', data: null, error: null })
 
   const loadSession = useCallback(async () => {
@@ -78,15 +80,20 @@ export default function App() {
     ;(async () => {
       let mode = null
       let inviteToken = null
+      let linkError = ''
       try {
         const result = await handleAuthCallback()
         if (result?.type === 'recovery') mode = 'reset'
         if (result?.type === 'invite') { mode = 'invite'; inviteToken = result.token ?? null }
-      } catch (error) {
-        if (!cancelled) setToast(error?.message || 'Ce lien d\'authentification est invalide ou expiré.')
+      } catch {
+        // The library keeps the failing token in the URL: drop it so a reload does
+        // not replay the error, and offer to request a fresh link instead.
+        try { history.replaceState(null, '', location.pathname + location.search) } catch { /* ignore */ }
+        mode = 'forgot'
+        linkError = LINK_INVALID_MESSAGE
       }
       if (cancelled) return
-      setAuthCallback({ done: true, mode, inviteToken })
+      setAuthCallback({ done: true, mode, inviteToken, linkError })
       await loadSession()
     })()
     return () => { cancelled = true }
@@ -95,6 +102,14 @@ export default function App() {
   useEffect(() => onAuthChange(event => {
     if (event === 'logout' || event === 'login') loadSession()
   }), [loadSession])
+
+  // Après la création d'une copropriété, le backend rattache immédiatement le
+  // compte au nouvel immeuble. On recharge donc la session lors de l'ouverture
+  // d'un immeuble du portefeuille afin que ce nouveau rôle soit visible sans
+  // devoir se déconnecter/reconnecter.
+  useEffect(() => {
+    if (route.path === 'portfolio' && routeBuilding) loadSession()
+  }, [loadSession, route.path, routeBuilding])
 
   const onLogout = useCallback(async () => {
     try { await logout() } catch { /* session locale purgée quand même */ }
@@ -126,9 +141,10 @@ export default function App() {
         <LoginView
           mode={authCallback.mode ?? (route.path === 'signup' ? 'signup' : 'login')}
           inviteToken={authCallback.inviteToken}
+          initialError={authCallback.linkError || ''}
           onAuthenticated={async () => {
             const ok = await loadSession()
-            if (ok) setAuthCallback(c => ({ ...c, mode: null, inviteToken: null }))
+            if (ok) setAuthCallback(c => ({ ...c, mode: null, inviteToken: null, linkError: '' }))
             return ok
           }}
         />
@@ -160,7 +176,14 @@ export default function App() {
   }
 
   const managesBuildings = data.user.isPlatformAdmin || data.memberships.some(m => m.role === 'manager')
+  const isBuildingReferent = data.memberships.some(m => m.isReferent === true)
   const wantsPortfolio = managesBuildings && (route.path === '' || route.path === 'portfolio')
+
+  if (!managesBuildings && isBuildingReferent && (route.path === '' || route.path === 'portfolio')) {
+    const referentBuilding = data.memberships.find(m => m.isReferent && (!routeBuilding || m.buildingSlug === routeBuilding))
+    if (!referentBuilding) return <ErrorPanel title="Accès refusé" message="Vous n’êtes pas référent de cet immeuble." />
+    return <BuildingManagementView session={data} buildingSlug={referentBuilding.buildingSlug} onLogout={onLogout} />
+  }
 
   if (wantsPortfolio) {
     return (
@@ -191,6 +214,8 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
     [memberships, requested],
   )
   const slug = membership.buildingSlug
+  const residentSection = route.path.startsWith('resident/') ? route.path.slice('resident/'.length) : 'overview'
+  const navigateResident = section => go(`/resident${section === 'overview' ? '' : `/${section}`}?building=${encodeURIComponent(slug)}`)
 
   const [workspace, setWorkspace] = useState({ status: 'loading', data: null, error: null })
 
@@ -212,13 +237,23 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
       await load()
       return ticket
     },
-    updateTicketStatus: async (reference, status) => {
-      const ticket = await api.updateTicketStatus(slug, reference, status)
+    updateTicketStatus: async (reference, status, schedule = {}) => {
+      const ticket = await api.updateTicketStatus(slug, reference, status, '', schedule)
       await load()
       return ticket
     },
     publishAnnouncement: async payload => { await api.publishAnnouncement(slug, payload); await load() },
+    updateAnnouncement: async (id, payload) => { await api.updateAnnouncement(slug, id, payload); await load() },
+    deleteAnnouncement: async id => { await api.deleteAnnouncement(slug, id); await load() },
     createEvent: async payload => { await api.createEvent(slug, payload); await load() },
+    updateEvent: async (id, payload) => { await api.updateEvent(slug, id, payload); await load() },
+    deleteEvent: async id => { await api.deleteEvent(slug, id); await load() },
+    uploadDocument: async form => { await api.uploadDocument(slug, form); await load() },
+    updateDocument: async (id, payload) => { await api.updateDocument(slug, id, payload); await load() },
+    deleteDocument: async id => { await api.deleteDocument(slug, id); await load() },
+    finances: () => api.finances(slug),
+    updateBuildingFinances: async figures => { const data = await api.updateBuildingFinances(slug, figures); await load(); return data },
+    updateMemberFinances: (id, payload) => api.updateMemberFinances(slug, id, payload),
     listTerminals: () => api.listTerminals(slug),
     createTerminal: payload => api.createTerminal(slug, payload),
     setTerminalReporting: (id, canReport) => api.setTerminalReporting(slug, id, canReport),
@@ -226,6 +261,7 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
     listMembers: () => api.listMembers(slug),
     inviteMember: payload => api.inviteMember(slug, payload),
     resendMemberInvite: id => api.resendMemberInvite(slug, id),
+    updatePendingInvite: (pendingId, payload) => api.updatePendingInvite(slug, pendingId, payload),
     retryPendingInvite: pendingId => api.retryPendingInvite(slug, pendingId),
     cancelPendingInvite: pendingId => api.cancelPendingInvite(slug, pendingId),
     updateMember: (id, payload) => api.updateMember(slug, id, payload),
@@ -262,7 +298,7 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
   return (
     <ResidentV2View
       data={workspaceData} session={session} setToast={setToast} onLogout={onLogout}
-      onReport={actions.createTicket}
+      onReport={actions.createTicket} initialSection={residentSection} onNavigate={navigateResident}
     />
   )
 }

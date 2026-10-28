@@ -3,12 +3,21 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "npm@10.9.0",
+  "engines": {
+    "node": "22.12.x",
+    "npm": "10.x"
+  },
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "node --experimental-strip-types --test tests/**/*.test.mjs",
+    "check": "npm run typecheck && npm test && npm run build"
   },
   "dependencies": {
+    "@netlify/blobs": "^10.7.13",
     "@netlify/database": "^1.1.0",
     "@netlify/identity": "2.0.0",
     "@vitejs/plugin-react": "latest",
@@ -16,12 +25,15 @@
     "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "svix": "^1.99.1",
     "typescript": "latest",
     "vite": "latest"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.2.17",
     "@netlify/functions": "^5.3.0",
     "@types/node": "^26.5.0",
-    "drizzle-kit": "^1.0.0-beta.22"
+    "drizzle-kit": "^1.0.0-beta.22",
+    "esbuild": "0.28.2"
   }
 }

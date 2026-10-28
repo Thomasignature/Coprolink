@@ -1,5 +1,5 @@
 export const money = n =>
-  new Intl.NumberFormat('fr-BE', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 })
+  new Intl.NumberFormat('fr-BE', { style: 'currency', currency: 'EUR', minimumFractionDigits: 2, maximumFractionDigits: 2 })
     .format(Number(n) || 0)
 
 /** Accepte aussi bien "2026-09-08" (colonnes date) qu'un horodatage ISO complet. */
