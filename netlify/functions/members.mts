@@ -250,7 +250,6 @@ export default async (req: Request, context: Context) => {
 
         const identity = identityLookup.account;
         if (!identity) throw new HttpError(409, "Le compte d'authentification n'existe plus. Retirez ce copropriétaire puis ajoutez-le à nouveau.");
-        if (identity.activated) throw new HttpError(409, "Ce compte est déjà activé. La personne doit utiliser « Mot de passe oublié » sur l'écran de connexion.");
 
         try {
           await sendAccountActivationLink(account.email);
@@ -265,8 +264,10 @@ export default async (req: Request, context: Context) => {
           throw error;
         }
 
-        await writeAudit(ctx, { action: "member.reinvited", entityType: "building_member", entityId: target.id, summary: `Lien d'activation renvoyé à ${account.email}.` });
-        return Response.json({ id: target.id, email: account.email, invited: false, activationEmailRequested: true, message: `Lien d'activation demandé à Netlify Identity pour ${account.email}. La réception n'est pas confirmée ; la personne pourra choisir son mot de passe depuis le lien reçu.` });
+        await writeAudit(ctx, { action: "member.reinvited", entityType: "building_member", entityId: target.id, summary: `Lien d’accès demandé pour ${account.email}.` });
+        return Response.json({ id: target.id, email: account.email, invited: false, activationEmailRequested: true, deliveryConfirmed: false, message: identity.activated
+          ? `Compte déjà actif : lien de réinitialisation du mot de passe demandé pour ${account.email}. La réception n’est pas confirmée ; le mot de passe habituel reste utilisable.`
+          : `Lien d’activation demandé à Netlify Identity pour ${account.email}. La réception n’est pas confirmée.` });
       }
 
       const role = assertAssignableRole(body.role ?? target.role);
