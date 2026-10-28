@@ -2,7 +2,7 @@ import type { Config } from "@netlify/functions";
 import { sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { buildings } from "../../db/schema.js";
-import { jsonError, listMemberships, resolvePrincipal } from "../lib/auth.mts";
+import { isActiveCoproLinkReferent, jsonError, listMemberships, resolvePrincipal } from "../lib/auth.mts";
 
 /**
  * État de session. Renvoie 200 même sans session afin que le client puisse
@@ -31,6 +31,10 @@ export default async (req: Request) => {
     }
 
     const memberships = await listMemberships(principal.userId);
+    const membershipsWithGovernance = await Promise.all(memberships.map(async (membership) => ({
+      ...membership,
+      isReferent: await isActiveCoproLinkReferent(membership.buildingId, principal.userId),
+    })));
 
     // Un compte sans aucun rattachement doit savoir s'il peut installer le
     // premier immeuble ou s'il doit attendre qu'un syndic lui accorde l'accès.
@@ -52,11 +56,12 @@ export default async (req: Request) => {
           fullName: principal.fullName,
           isPlatformAdmin: principal.isPlatformAdmin,
         },
-        memberships: memberships.map((m) => ({
+        memberships: membershipsWithGovernance.map((m) => ({
           buildingSlug: m.buildingSlug,
           buildingName: m.buildingName,
           role: m.role,
           unitLabel: m.unitLabel,
+          isReferent: m.isReferent,
         })),
         needsSetup: memberships.length === 0,
         canBootstrap,

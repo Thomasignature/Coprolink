@@ -121,6 +121,7 @@ rafraîchit chaque minute.
 | --- | --- |
 | `NETLIFY_DATABASE_URL` | Fournie automatiquement par Netlify Database |
 | `COPROLINK_SETUP_TOKEN` | Optionnelle. Si définie, exigée dans l'en-tête `x-setup-token` pour créer un immeuble |
+| `COPROLINK_INBOUND_DOMAIN` | Recommandée avec l’Inbox. Domaine de réception (ex. `in.exemple.be`) : seuls les destinataires To/Cc de ce domaine servent au routage vers une copropriété |
 
 ## API
 
@@ -153,14 +154,64 @@ rafraîchit chaque minute.
 5. **Le hardware est une interface, pas le produit** : la valeur est dans la
    continuité des données et des processus.
 
-## Reste à faire avant un pilote réel
+## État de la version intégrée — corrections du 28 octobre 2026
 
-- Stockage des fichiers de documents (Netlify Blobs) : seules leurs fiches sont
-  aujourd'hui référencées, la colonne `documents.storage_key` est prévue pour cela.
-- Notifications e-mail lors d'un changement de statut ou d'une communication.
-- Écrans d'administration manquants : édition des documents, du budget et de la
-  situation financière par lot.
-- Pages légales : politique de confidentialité, registre des traitements,
-  politique de conservation et contrat de sous-traitance RGPD.
-- Ingestion d'e-mails entrants pour éviter la double saisie du syndic.
-- Mode prestataire avec lien sécurisé pour confirmer une intervention.
+La branche d’intégration reste une prévisualisation. Les corrections décrites dans
+`AUDIT_FIXES.md` ne constituent pas une validation en production.
+
+- Documents : dépôt et fichiers réels Netlify Blobs, téléchargement public sur
+  terminal, modification et retrait ; 4 Mo par fichier.
+- Mon lot : relations V3 actives, sélection multi-lots, montants personnels
+  par période de propriété. Les occupants ne reçoivent aucun montant personnel.
+- Fin de relation : dates civiles valides et effectives, historique en lecture
+  seule, accès retiré à la dernière relation, invitations anciennes neutralisées.
+- Référents : vue de gouvernance accessible sans rôle syndic ; écritures
+  administratives réservées au syndic.
+- Interventions : date et heure associées au statut Planifié, historique conservé.
+- Inbox : actions transactionnelles et pièces jointes archivées après validation
+  humaine. Analyse par règles, date proposée modifiable avant validation.
+- Notifications métier : file persistante, reprise après erreur, contrôle des
+  accès au moment de l’envoi et suivi dans les communications du syndic.
+
+### Notifications métier
+
+Configurer dans l’environnement Functions : `RESEND_API_KEY`,
+`COPROLINK_EMAIL_FROM` (adresse d’un domaine validé chez Resend), et
+`COPROLINK_NOTIFICATIONS_ENABLED=true` pour activer les nouveaux envois métier.
+Ils sont strictement désactivés hors contexte `production`.
+L’invitation et la récupération de compte passent toujours par Netlify Identity,
+indépendamment de ces paramètres.
+
+Une communication crée une notification individuelle pour chaque membre actif.
+Un changement de statut notifie uniquement l’auteur du signalement s’il conserve
+un accès actif. Les messages invitent à consulter l’application et ne reprennent
+pas les descriptions privées. Le traitement a lieu toutes les cinq minutes ;
+les erreurs sont reprises au maximum cinq fois et pendant moins de 23 heures.
+Le statut « accepté par le fournisseur » ne garantit pas la réception en boîte.
+Une ligne expirée nécessite un contrôle ; elle n’est jamais réémise hors de la
+fenêtre d’idempotence du fournisseur.
+
+### Données financières
+
+`relation_finances` conserve des montants personnels par période de propriété.
+La migration reprend uniquement un ancien montant lié sans ambiguïté à un lot
+et à un propriétaire actif. Les anciens chiffres de `building_members` sont
+conservés, visibles par le syndic pour rapprochement, et ne sont pas additionnés.
+Une nouvelle période de propriété ne reprend jamais les montants de la précédente.
+
+### Validation
+
+Environnement de référence : Node 22.12.0, npm 10.9.0.
+`npm ci` puis `npm run check` (types, tests, compilation).
+Les tests d’intégration utilisent une base PostgreSQL locale PGlite et les
+véritables fonctions, avec Identity et les appels externes remplacés par des
+fixtures. Aucune base distante ni aucun e-mail réel ne sont utilisés.
+
+Les sessions syndic, propriétaire, locataire, référent non syndic et terminal, le
+changement de syndic, les retours de personnes, l’Inbox et les notifications sont
+couverts par ces tests locaux (voir la seconde partie de `AUDIT_FIXES.md`).
+Restent à valider avec de vrais comptes : réception et clic des liens Identity,
+sessions réelles dans un navigateur, terminal et rendu 375/768 px.
+Les textes de confidentialité/conservation, responsabilités et procédures de
+sauvegarde/restauration doivent être finalisés avant un pilote. Les votes/PV d’AG
+et le portail prestataire restent des fonctionnalités complémentaires à cadrer.

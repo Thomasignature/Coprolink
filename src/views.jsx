@@ -5,6 +5,7 @@ import {
   MessageSquareText, Plus, Search, ShieldCheck, Smartphone, Sparkles, TicketCheck, Trash2, Users,
   WalletCards, Wrench, X,
 } from 'lucide-react'
+import { api } from './api.js'
 import { dayAndTime, dayNumber, longDate, metaFor, money, monthShort, roleLabel, shortDate, statusMeta, timelineDate } from './format.js'
 
 export function Logo({ compact = false }) {
@@ -23,12 +24,25 @@ export function Logo({ compact = false }) {
  */
 function Modal({ onClose, labelledBy, className = 'modal-card', backdropClass = 'modal-backdrop', children }) {
   const panel = useRef(null)
+  // Callers pass a new inline onClose on every render: keep it in a ref so a
+  // parent re-render (toast, refresh) never steals focus from the open dialog.
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
   useEffect(() => {
-    const onKey = e => { if (e.key === 'Escape') onClose() }
+    const trigger = document.activeElement
+    const onKey = e => {
+      if (e.key === 'Escape') closeRef.current()
+      if (e.key !== 'Tab') return
+      const nodes = [...(panel.current?.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex="0"]') || [])]
+      const first = nodes[0]; const last = nodes.at(-1)
+      if (!first) { e.preventDefault(); return }
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === panel.current)) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && (document.activeElement === last || document.activeElement === panel.current)) { e.preventDefault(); first.focus() }
+    }
     addEventListener('keydown', onKey)
     panel.current?.focus()
-    return () => removeEventListener('keydown', onKey)
-  }, [onClose])
+    return () => { removeEventListener('keydown', onKey); if (trigger?.isConnected) trigger.focus() }
+  }, [])
 
   return (
     <div className={backdropClass} onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
@@ -104,6 +118,12 @@ function AgendaRow({ e }) {
       <time>{e.eventTime}</time>
     </div>
   )
+}
+
+/** Ouvre le fichier d'un document ; la session Identity (cookie) suffit côté serveur. */
+const openDocument = (slug, d, setToast) => {
+  if (!d.available) { setToast('Aucun fichier n\'est encore associé à ce document'); return }
+  window.open(api.documentUrl(slug, d.id), '_blank', 'noopener')
 }
 
 function DocumentTile({ d, onOpen }) {
@@ -232,7 +252,12 @@ export function DisplayView({ data, onReport, onRefresh, setToast }) {
                 {data.documents.length === 0
                   ? <EmptyState icon={<FileText />} title="Aucun document" text="Les documents publics apparaîtront ici." />
                   : data.documents.map(d => (
-                    <DocumentTile key={d.id} d={d} onOpen={() => setToast('Le stockage des documents n\'est pas encore activé')} />
+                    <DocumentTile
+                      key={d.id} d={d}
+                      onOpen={() => (d.available
+                        ? api.openTerminalDocument(d.id).catch(error => setToast(error.message))
+                        : setToast('Aucun fichier n\'est encore associé à ce document'))}
+                    />
                   ))}
               </div>
             </div>
@@ -329,7 +354,7 @@ export function ResidentView({ data, session, onReport, onLogout, setToast }) {
         <div className="content-wrap">
           {section === 'overview' && <ResidentOverview data={data} session={session} setSection={setSection} setReport={setReport} />}
           {section === 'tickets' && <ResidentTickets tickets={data.myTickets} onReport={() => setReport(true)} />}
-          {section === 'documents' && <DocumentsSection docs={data.documents} setToast={setToast} />}
+          {section === 'documents' && <DocumentsSection docs={data.documents} slug={data.building.slug} setToast={setToast} />}
           {section === 'finance' && <ResidentFinance data={data} />}
           {section === 'agenda' && <AgendaSection events={data.events} />}
         </div>
@@ -467,11 +492,14 @@ function ResidentTickets({ tickets, onReport }) {
 function ResidentTicket({ t }) {
   const m = metaFor(t.status)
   // Les étapes atteintes sont déduites de l'historique réellement écrit en base.
+  // `toStatus` is the recorded transition; labels are only a fallback for older rows.
   const reachedLabels = new Set((t.timeline ?? []).map(s => s.label))
+  const reached = new Set((t.timeline ?? []).map(s => s.toStatus).filter(Boolean))
+  const planned = reached.has('scheduled') || t.status === 'scheduled' || reachedLabels.has('Intervention planifiée') || reachedLabels.has('Rendez-vous confirmé')
   const steps = [
     { label: 'Signalé', done: true },
-    { label: 'Pris en charge', done: reachedLabels.has('Pris en charge') || reachedLabels.has('En attente d\'un tiers') || reachedLabels.has('Rendez-vous confirmé') || t.status === 'resolved' },
-    { label: 'Planifié', done: reachedLabels.has('Rendez-vous confirmé') || t.status === 'resolved' },
+    { label: 'Pris en charge', done: reached.has('in_progress') || reached.has('waiting') || reachedLabels.has('Pris en charge') || reachedLabels.has('En attente d\'un tiers') || planned || t.status === 'resolved' },
+    { label: 'Planifié', done: planned || t.status === 'resolved' },
     { label: 'Résolu', done: t.status === 'resolved' },
   ]
 
@@ -494,7 +522,13 @@ function ResidentTicket({ t }) {
   )
 }
 
-function DocumentsSection({ docs, setToast }) {
+/**
+ * Liste des documents. `manage` (espace syndic uniquement) ajoute le
+ * téléversement, le changement de visibilité et la suppression ; le serveur
+ * revérifie `documents:manage` à chaque appel.
+ */
+function DocumentsSection({ docs, slug, setToast, manage }) {
+  const withoutFile = docs.filter(d => !d.available).length
   return (
     <>
       <div className="content-heading">
@@ -503,16 +537,102 @@ function DocumentsSection({ docs, setToast }) {
           <p>Documents de l'ACP et documents réservés à votre espace.</p>
         </div>
       </div>
-      <div className="notice-inline">
-        <Info size={16} />
-        <span>Les fichiers ne sont pas encore stockés sur la plateforme : seules leurs fiches sont référencées.</span>
-      </div>
+      {manage && <DocumentUpload manage={manage} setToast={setToast} />}
+      {withoutFile > 0 && (
+        <div className="notice-inline">
+          <Info size={16} />
+          <span>
+            {withoutFile} document{withoutFile > 1 ? 's' : ''} référencé{withoutFile > 1 ? 's' : ''} sans fichier
+            {manage ? ' : ajoutez le fichier ci-dessus puis supprimez l\'ancienne fiche.' : '.'}
+          </span>
+        </div>
+      )}
       <div className="document-list">
         {docs.length === 0
-          ? <EmptyState icon={<FileText />} title="Aucun document" text="Le syndic n'a référencé aucun document." />
-          : docs.map(d => <DocumentTile key={d.id} d={d} onOpen={() => setToast('Le stockage des documents n\'est pas encore activé')} />)}
+          ? <EmptyState icon={<FileText />} title="Aucun document" text={manage ? 'Ajoutez un premier document.' : 'Le syndic n\'a partagé aucun document.'} />
+          : docs.map(d => (manage
+            ? (
+              <div className="terminal-row" key={d.id}>
+                <div><DocumentTile d={d} onOpen={() => openDocument(slug, d, setToast)} /></div>
+                <select
+                  value={d.access}
+                  aria-label={`Visibilité de ${d.name}`}
+                  onChange={async e => {
+                    try {
+                      await manage.update(d.id, { access: e.target.value })
+                      setToast('Visibilité mise à jour')
+                    } catch (error) { setToast(error.message) }
+                  }}
+                >
+                  <option value="private">Privé · membres</option>
+                  <option value="owners">Copropriétaires uniquement</option>
+                  <option value="public">Public · écran des communs</option>
+                </select>
+                <button
+                  className="danger-btn"
+                  onClick={async () => {
+                    if (!window.confirm(`Supprimer « ${d.name} » ?`)) return
+                    try {
+                      await manage.remove(d.id)
+                      setToast('Document supprimé')
+                    } catch (error) { setToast(error.message) }
+                  }}
+                ><Trash2 size={16} /> Supprimer</button>
+              </div>
+            )
+            : <DocumentTile key={d.id} d={d} onOpen={() => openDocument(slug, d, setToast)} />))}
       </div>
     </>
+  )
+}
+
+function DocumentUpload({ manage, setToast }) {
+  const [file, setFile] = useState(null)
+  const [name, setName] = useState('')
+  const [access, setAccess] = useState('private')
+  const [busy, setBusy] = useState(false)
+  const inputRef = useRef(null)
+
+  return (
+    <section className="card">
+      <form
+        className="inline-form"
+        onSubmit={async e => {
+          e.preventDefault()
+          if (!file || busy) return
+          if (file.size > 4 * 1024 * 1024) { setToast("Fichier trop volumineux (4 Mo maximum)"); return }
+          setBusy(true)
+          const form = new FormData()
+          form.append('file', file)
+          form.append('name', name.trim())
+          form.append('access', access)
+          try {
+            await manage.upload(form)
+            setFile(null); setName(''); setAccess('private')
+            if (inputRef.current) inputRef.current.value = ''
+            setToast('Document ajouté')
+          } catch (error) { setToast(error.message) }
+          setBusy(false)
+        }}
+      >
+        <label className="grow">Fichier (4 Mo max.)
+          <input
+            ref={inputRef} type="file" required
+            accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.csv,.doc,.docx,.xls,.xlsx,.odt,.ods"
+            onChange={e => setFile(e.target.files?.[0] ?? null)}
+          />
+        </label>
+        <label className="grow">Nom affiché<input value={name} onChange={e => setName(e.target.value)} placeholder="Par défaut : nom du fichier" maxLength={160} /></label>
+        <label>Visibilité
+          <select value={access} onChange={e => setAccess(e.target.value)}>
+            <option value="private">Privé · membres</option>
+                  <option value="owners">Copropriétaires uniquement</option>
+            <option value="public">Public · écran des communs</option>
+          </select>
+        </label>
+        <button className="primary-btn" disabled={!file || busy}><Plus /> {busy ? 'Envoi…' : 'Ajouter'}</button>
+      </form>
+    </section>
   )
 }
 
@@ -578,8 +698,17 @@ function AgendaSection({ events }) {
 export function SyndicView({ data, session, actions, onLogout, setToast }) {
   const [section, setSection] = useState('dashboard')
   const [selected, setSelected] = useState(null)
+  // `true` pour une création, ou l'élément existant à modifier.
   const [compose, setCompose] = useState(false)
   const [eventOpen, setEventOpen] = useState(false)
+
+  const removeWithConfirm = async (label, action, done) => {
+    if (!window.confirm(`Supprimer « ${label} » ? Les occupants ne la verront plus.`)) return
+    try {
+      await action()
+      setToast(done)
+    } catch (error) { setToast(error.message) }
+  }
 
   const tickets = data.buildingTickets
   const open = tickets.filter(t => t.status !== 'resolved')
@@ -590,9 +719,9 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
     resolved: tickets.filter(t => t.status === 'resolved').length,
   }
 
-  const changeStatus = async (ticket, status) => {
+  const changeStatus = async (ticket, status, schedule = {}) => {
     try {
-      const updated = await actions.updateTicketStatus(ticket.reference, status)
+      const updated = await actions.updateTicketStatus(ticket.reference, status, schedule)
       setSelected(updated)
       setToast('Statut mis à jour pour tous les utilisateurs')
     } catch (error) {
@@ -616,6 +745,7 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
           <NavItem icon={<MessageSquareText />} label="Communications" active={section === 'comms'} onClick={() => setSection('comms')} />
           <NavItem icon={<CalendarDays />} label="Agenda" active={section === 'agenda'} onClick={() => setSection('agenda')} />
           <NavItem icon={<FileText />} label="Documents" active={section === 'docs'} onClick={() => setSection('docs')} />
+          <NavItem icon={<WalletCards />} label="Finances" active={section === 'finance'} onClick={() => setSection('finance')} />
           <NavItem icon={<Gauge />} label="Écrans" active={section === 'terminals'} onClick={() => setSection('terminals')} />
           <NavItem icon={<Users />} label="Accès" active={section === 'members'} onClick={() => setSection('members')} />
         </nav>
@@ -627,6 +757,12 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
       </aside>
       <section className="app-content">
         <MobileHeader title="Espace syndic" onExit={onLogout} />
+        {/* Side nav is hidden at ≤900px: keep every section reachable on phones and tablets. */}
+        <nav className="syndic-mobile-nav" aria-label="Sections de l’espace syndic">
+          {[['dashboard', 'Pilotage'], ['tickets', `Demandes${open.length ? ` (${open.length})` : ''}`], ['comms', 'Communications'], ['agenda', 'Agenda'], ['docs', 'Documents'], ['finance', 'Finances'], ['terminals', 'Écrans'], ['members', 'Accès']].map(([key, label]) => (
+            <button key={key} type="button" className={section === key ? 'active' : ''} aria-current={section === key ? 'page' : undefined} onClick={() => setSection(key)}>{label}</button>
+          ))}
+        </nav>
         <div className="content-wrap syndic-wrap">
           {section === 'dashboard' && (
             <SyndicDashboard
@@ -635,9 +771,25 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
             />
           )}
           {section === 'tickets' && <SyndicTickets tickets={tickets} setSelected={setSelected} />}
-          {section === 'comms' && <SyndicComms data={data} setCompose={setCompose} />}
-          {section === 'agenda' && <SyndicAgenda events={data.events} onAdd={() => setEventOpen(true)} />}
-          {section === 'docs' && <DocumentsSection docs={data.documents} setToast={setToast} />}
+          {section === 'comms' && (
+            <SyndicComms
+              data={data} setCompose={setCompose}
+              onDelete={a => removeWithConfirm(a.title, () => actions.deleteAnnouncement(a.id), 'Communication retirée')}
+            />
+          )}
+          {section === 'agenda' && (
+            <SyndicAgenda
+              events={data.events} onAdd={() => setEventOpen(true)} onEdit={e => setEventOpen(e)}
+              onDelete={e => removeWithConfirm(e.title, () => actions.deleteEvent(e.id), 'Date retirée de l\'agenda')}
+            />
+          )}
+          {section === 'docs' && (
+            <DocumentsSection
+              docs={data.documents} slug={data.building.slug} setToast={setToast}
+              manage={{ upload: actions.uploadDocument, update: actions.updateDocument, remove: actions.deleteDocument }}
+            />
+          )}
+          {section === 'finance' && <SyndicFinance actions={actions} setToast={setToast} />}
           {section === 'terminals' && <TerminalsPanel actions={actions} setToast={setToast} />}
           {section === 'members' && <MembersPanel actions={actions} setToast={setToast} />}
         </div>
@@ -645,24 +797,36 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
       {current && <SyndicTicketDrawer ticket={current} onClose={() => setSelected(null)} changeStatus={changeStatus} />}
       {compose && (
         <ComposeModal
+          initial={compose === true ? null : compose}
           onClose={() => setCompose(false)}
           onPublish={async payload => {
             try {
-              await actions.publishAnnouncement(payload)
+              if (compose === true) {
+                await actions.publishAnnouncement(payload)
+                setToast(payload.isPublic ? 'Communication publiée sur l\'app et l\'écran' : 'Communication publiée dans l\'app')
+              } else {
+                await actions.updateAnnouncement(compose.id, payload)
+                setToast('Communication modifiée')
+              }
               setCompose(false)
-              setToast(payload.isPublic ? 'Communication publiée sur l\'app et l\'écran' : 'Communication publiée dans l\'app')
             } catch (error) { setToast(error.message) }
           }}
         />
       )}
       {eventOpen && (
         <EventModal
+          initial={eventOpen === true ? null : eventOpen}
           onClose={() => setEventOpen(false)}
           onCreate={async payload => {
             try {
-              await actions.createEvent(payload)
+              if (eventOpen === true) {
+                await actions.createEvent(payload)
+                setToast('Date ajoutée à l\'agenda')
+              } else {
+                await actions.updateEvent(eventOpen.id, payload)
+                setToast('Date modifiée')
+              }
               setEventOpen(false)
-              setToast('Date ajoutée à l\'agenda')
             } catch (error) { setToast(error.message) }
           }}
         />
@@ -688,7 +852,7 @@ function SyndicDashboard({ data, counts, open, setSelected, setSection, setCompo
       <div className="manager-metrics">
         <ManagerMetric label="Nouvelles demandes" value={counts.new} helper="à qualifier" tone="blue" />
         <ManagerMetric label="En attente" value={counts.waiting} helper="d'un tiers" tone="violet" />
-        <ManagerMetric label="Planifiées" value={counts.scheduled} helper="avec date confirmée" tone="teal" />
+        <ManagerMetric label="Planifiées" value={counts.scheduled} helper="interventions à organiser" tone="teal" />
         <ManagerMetric label="Résolues" value={counts.resolved} helper="dossiers clôturés" tone="green" />
       </div>
       <div className="manager-grid">
@@ -703,7 +867,7 @@ function SyndicDashboard({ data, counts, open, setSelected, setSection, setCompo
               : open.slice(0, 4).map(t => (
                 <button key={t.reference} onClick={() => setSelected(t)}>
                   <div className="ticket-icon sm"><Wrench /></div>
-                  <div><strong>{t.title}</strong><span>{t.reference} · {t.location}</span></div>
+                  <div><strong>{t.title}</strong><span>{t.reference} · {t.location} · Priorité {priorityLabel(t.priority)}</span></div>
                   <span className={'status ' + metaFor(t.status).cls}>{metaFor(t.status).label}</span>
                   <ChevronRight />
                 </button>
@@ -738,12 +902,17 @@ function ManagerMetric({ label, value, helper, tone }) {
   return <article className={'manager-metric ' + tone}><span>{label}</span><strong>{value}</strong><small>{helper}</small></article>
 }
 
+const priorityLabel = value => ({ high: 'Haute', normal: 'Normale', low: 'Basse' }[value] || 'Normale')
+const priorityRank = value => ({ high: 0, normal: 1, low: 2 }[value] ?? 1)
+
 function SyndicTickets({ tickets, setSelected }) {
   const [filter, setFilter] = useState('all')
   const [query, setQuery] = useState('')
+  const [priority, setPriority] = useState('all')
   const visible = tickets.filter(t =>
+    (priority === 'all' || (t.priority || 'normal') === priority) &&
     (filter === 'all' || t.status === filter) &&
-    `${t.reference} ${t.title} ${t.location}`.toLowerCase().includes(query.toLowerCase()))
+    `${t.reference} ${t.title} ${t.location}`.toLowerCase().includes(query.toLowerCase())).sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority))
 
   return (
     <>
@@ -759,6 +928,10 @@ function SyndicTickets({ tickets, setSelected }) {
           <option value="all">Tous les statuts</option>
           {Object.entries(statusMeta).map(([key, m]) => <option key={key} value={key}>{m.label}</option>)}
         </select>
+        <select value={priority} onChange={e => setPriority(e.target.value)} aria-label="Filtrer par priorité">
+          <option value="all">Toutes les priorités</option>
+          <option value="high">Priorité haute</option><option value="normal">Priorité normale</option><option value="low">Priorité basse</option>
+        </select>
       </div>
       <section className="card table-card">
         <div className="ticket-table">
@@ -767,7 +940,7 @@ function SyndicTickets({ tickets, setSelected }) {
             ? <EmptyState icon={<TicketCheck />} title="Aucun résultat" text="Aucune demande ne correspond à ce filtre." />
             : visible.map(t => (
               <button className="ticket-row" key={t.reference} onClick={() => setSelected(t)}>
-                <span><strong>{t.title}</strong><small>{t.reference} · {longDate(t.createdAt)}</small></span>
+                <span><strong>{t.title}</strong><small>{t.reference} · {longDate(t.createdAt)} · Priorité {priorityLabel(t.priority)}</small></span>
                 <span>{t.location}</span>
                 <span><i className={'status ' + metaFor(t.status).cls}>{metaFor(t.status).label}</i></span>
                 <span>{t.nextStep}</span>
@@ -780,7 +953,11 @@ function SyndicTickets({ tickets, setSelected }) {
   )
 }
 
-function SyndicComms({ data, setCompose }) {
+function SyndicComms({ data, setCompose, onDelete }) {
+  const [delivery, setDelivery] = useState(null)
+  const [deliveryError, setDeliveryError] = useState('')
+  const refreshDelivery = () => api.notificationStatus(data.building.slug).then(value => { setDelivery(value); setDeliveryError('') }).catch(error => setDeliveryError(error.message))
+  useEffect(() => { refreshDelivery() }, [data.building.slug, data.announcements.length])
   return (
     <>
       <div className="content-heading">
@@ -790,6 +967,11 @@ function SyndicComms({ data, setCompose }) {
         </div>
         <button className="primary-btn" onClick={() => setCompose(true)}><Plus /> Nouvelle communication</button>
       </div>
+      <section className="card"><div className="card-head"><h3>Notifications par e-mail</h3><button type="button" className="text-btn" onClick={refreshDelivery}>Actualiser</button></div>
+        {deliveryError && <p role="alert">{deliveryError}</p>}
+        {delivery && <><p>{delivery.enabled ? 'Envoi activé · les notifications sont traitées toutes les cinq minutes.' : 'Envoi désactivé dans cet environnement.'}</p>
+          {delivery.notifications.map(item => <p key={item.id}>#{item.id} · {({ pending: 'En attente', sending: 'En cours', sent: 'Accepté par le fournisseur', failed: 'Échec — nouvelle tentative automatique', cancelled: 'Annulé (accès ou contenu retiré)', expired: 'Expiré — vérification nécessaire' })[item.status] || item.status}{item.error ? ` · ${item.error}` : ''}</p>)}</>}
+      </section>
       <div className="communication-list">
         {data.announcements.length === 0
           ? <EmptyState icon={<MessageSquareText />} title="Aucune communication" text="Publiez une première information." />
@@ -805,6 +987,10 @@ function SyndicComms({ data, setCompose }) {
                 {a.isPublic && <span><Gauge /> Écran</span>}
                 <span><BookOpen /> Journal</span>
               </div>
+              <div className="item-actions">
+                <button className="ghost-btn" onClick={() => setCompose(a)}><Wrench size={16} /> Modifier</button>
+                <button className="danger-btn" onClick={() => onDelete(a)}><Trash2 size={16} /> Retirer</button>
+              </div>
             </article>
           ))}
       </div>
@@ -812,7 +998,7 @@ function SyndicComms({ data, setCompose }) {
   )
 }
 
-function SyndicAgenda({ events, onAdd }) {
+function SyndicAgenda({ events, onAdd, onEdit, onDelete }) {
   return (
     <>
       <div className="content-heading">
@@ -823,7 +1009,15 @@ function SyndicAgenda({ events, onAdd }) {
         <div className="agenda-list">
           {events.length === 0
             ? <EmptyState icon={<CalendarDays />} title="Aucune date" text="Ajoutez une première date à l'agenda." />
-            : events.map(e => <AgendaRow key={e.id} e={e} />)}
+            : events.map(e => (
+              <div key={e.id}>
+                <AgendaRow e={e} />
+                <div className="item-actions">
+                  <button className="ghost-btn" onClick={() => onEdit(e)}><Wrench size={16} /> Modifier</button>
+                  <button className="danger-btn" onClick={() => onDelete(e)}><Trash2 size={16} /> Retirer</button>
+                </div>
+              </div>
+            ))}
         </div>
       </section>
     </>
@@ -831,6 +1025,16 @@ function SyndicAgenda({ events, onAdd }) {
 }
 
 function SyndicTicketDrawer({ ticket, onClose, changeStatus }) {
+  const [scheduledOn, setScheduledOn] = useState(ticket.scheduledOn || '')
+  const [scheduledTime, setScheduledTime] = useState(ticket.scheduledTime || '')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { setScheduledOn(ticket.scheduledOn || ''); setScheduledTime(ticket.scheduledTime || '') }, [ticket.reference])
+  const update = async status => {
+    if (busy) return
+    setBusy(true)
+    try { await changeStatus(ticket, status, status === 'scheduled' ? { scheduledOn, scheduledTime } : {}) }
+    finally { setBusy(false) }
+  }
   return (
     <Modal onClose={onClose} className="drawer" backdropClass="modal-backdrop drawer-backdrop" labelledBy="drawer-title">
       <div className="drawer-head">
@@ -844,14 +1048,17 @@ function SyndicTicketDrawer({ ticket, onClose, changeStatus }) {
           <span><small>Lieu</small><strong>{ticket.location}</strong></span>
           <span><small>Signalé par</small><strong>{ticket.reporterLabel || '—'}</strong></span>
           <span><small>Créé le</small><strong>{longDate(ticket.createdAt)}</strong></span>
+          <span><small>Priorité</small><strong>{priorityLabel(ticket.priority)}</strong></span>
           <span><small>Visibilité</small><strong>{ticket.isPublic ? 'Publique' : 'Privée'}</strong></span>
         </div>
       </div>
       <div className="drawer-section">
         <span className="overline">Mettre à jour</span>
+        <div className="field-row"><label>Date d’intervention<input type="date" value={scheduledOn} onChange={event => setScheduledOn(event.target.value)} /></label><label>Heure (facultative)<input type="time" value={scheduledTime} onChange={event => setScheduledTime(event.target.value)} /></label></div>
+        <p>Renseignez la date puis choisissez « Planifié » pour l’enregistrer.</p>
         <div className="status-actions">
           {Object.entries(statusMeta).map(([key, m]) => (
-            <button key={key} className={ticket.status === key ? 'selected' : ''} onClick={() => changeStatus(ticket, key)}>
+            <button key={key} className={ticket.status === key ? 'selected' : ''} disabled={busy || (key === 'scheduled' && !scheduledOn)} onClick={() => update(key)}>
               <span className={'status-dot ' + m.cls} />{m.label}{ticket.status === key && <Check />}
             </button>
           ))}
@@ -877,6 +1084,7 @@ function TerminalsPanel({ actions, setToast }) {
   const [label, setLabel] = useState('')
   const [canReport, setCanReport] = useState(true)
   const [issued, setIssued] = useState(null)
+  const [busy, setBusy] = useState(false)
 
   const reload = async () => {
     setState(s => ({ ...s, loading: true }))
@@ -892,13 +1100,15 @@ function TerminalsPanel({ actions, setToast }) {
 
   const create = async e => {
     e.preventDefault()
-    if (!label.trim()) return
+    if (!label.trim() || busy) return
+    // A second click would issue an untracked active token.
+    setBusy(true)
     try {
       const created = await actions.createTerminal({ label: label.trim(), canReport })
       setIssued(created)
       setLabel('')
       reload()
-    } catch (error) { setToast(error.message) }
+    } catch (error) { setToast(error.message) } finally { setBusy(false) }
   }
 
   return (
@@ -929,7 +1139,7 @@ function TerminalsPanel({ actions, setToast }) {
             <input type="checkbox" checked={canReport} onChange={e => setCanReport(e.target.checked)} />
             Autoriser les signalements depuis cet écran
           </label>
-          <button className="primary-btn"><Plus /> Créer</button>
+          <button className="primary-btn" disabled={busy}><Plus /> {busy ? "Création…" : "Créer"}</button>
         </form>
       </section>
 
@@ -988,13 +1198,15 @@ function TerminalsPanel({ actions, setToast }) {
                           Signalements
                         </label>
                         <button
-                          className="danger-btn"
+                          className="danger-btn" disabled={busy}
                           onClick={async () => {
+                            if (busy || !window.confirm(`Révoquer le jeton « ${t.label} » ? L’écran sera déconnecté.`)) return
+                            setBusy(true)
                             try {
                               await actions.revokeTerminal(t.id)
                               setToast('Jeton révoqué')
                               reload()
-                            } catch (error) { setToast(error.message) }
+                            } catch (error) { setToast(error.message) } finally { setBusy(false) }
                           }}
                         ><Trash2 size={16} /> Révoquer</button>
                       </>
@@ -1009,6 +1221,120 @@ function TerminalsPanel({ actions, setToast }) {
   )
 }
 
+/**
+ * Saisie des chiffres financiers par le syndic. Chaque copropriétaire ne voit
+ * ensuite que sa propre situation (appel trimestriel, solde) dans son espace.
+ */
+function SyndicFinance({ actions, setToast }) {
+  const [state, setState] = useState({ loading: true, error: null, data: null })
+  const [figures, setFigures] = useState({ reserveFund: '', yearlyBudget: '', yearlySpent: '' })
+  const [busy, setBusy] = useState(false)
+
+  const apply = data => {
+    setState({ loading: false, error: null, data })
+    setFigures({
+      reserveFund: String(data.building.reserveFund),
+      yearlyBudget: String(data.building.yearlyBudget),
+      yearlySpent: String(data.building.yearlySpent),
+    })
+  }
+
+  const reload = async () => {
+    try { apply(await actions.finances()) } catch (error) { setState({ loading: false, error: error.message, data: null }) }
+  }
+
+  useEffect(() => { reload() }, [])
+
+  return (
+    <>
+      <div className="content-heading">
+        <div>
+          <span className="overline">Finances</span><h1>Des chiffres à jour, sans export.</h1>
+          <p>Chaque copropriétaire ne voit que sa propre situation ; les chiffres de l'immeuble sont visibles de tous les membres.</p>
+        </div>
+      </div>
+      {state.loading && <Spinner label="Chargement des finances…" />}
+      {state.error && <ErrorPanel title="Finances indisponibles" message={state.error} onRetry={reload} />}
+      {state.data && (
+        <>
+          <section className="card">
+            <form
+              className="inline-form"
+              onSubmit={async e => {
+                e.preventDefault()
+                if (busy) return
+                setBusy(true)
+                try {
+                  apply(await actions.updateBuildingFinances(figures))
+                  setToast('Chiffres de l\'immeuble enregistrés')
+                } catch (error) { setToast(error.message) }
+                setBusy(false)
+              }}
+            >
+              {[['reserveFund', 'Fonds de réserve (€)'], ['yearlyBudget', 'Budget annuel (€)'], ['yearlySpent', 'Dépensé sur l\'exercice (€)']].map(([key, label]) => (
+                <label className="grow" key={key}>{label}
+                  <input
+                    type="number" min="0" step="0.01" inputMode="decimal" required
+                    value={figures[key]} onChange={e => setFigures(f => ({ ...f, [key]: e.target.value }))}
+                  />
+                </label>
+              ))}
+              <button className="primary-btn" disabled={busy}><Check /> Enregistrer</button>
+            </form>
+          </section>
+          {state.data.legacy?.length > 0 && <section className="card"><h3>Anciennes valeurs par compte</h3><p>Valeurs conservées pour rapprochement. Elles ne sont pas additionnées aux montants par lot. Une reprise automatique n’a lieu que lorsque le lot d’origine est sans ambiguïté.</p>{state.data.legacy.map(row => <p key={row.id}>{row.fullName} · {row.unitLabel || 'lot non précisé'} : appel {money(row.quarterlyCall)} · solde {money(row.balance)} · <strong>{row.reconciliation === 'matched' ? 'identique au montant du lot' : 'à rapprocher'}</strong></p>)}</section>}
+          <section className="card">
+            <div className="card-head"><div><span className="overline">Par lot et propriétaire</span><h3>Appel trimestriel et solde</h3></div></div>
+            {state.data.members.length === 0
+              ? <EmptyState icon={<WalletCards />} title="Aucun membre" text="Renseignez d’abord les personnes et leurs relations de propriété." />
+              : (
+                <div className="terminal-list">
+                  {state.data.members.map(m => <MemberFinanceRow key={m.id} member={m} actions={actions} setToast={setToast} onSaved={data => setState({ loading: false, error: null, data })} />)}
+                </div>
+              )}
+          </section>
+        </>
+      )}
+    </>
+  )
+}
+
+function MemberFinanceRow({ member, actions, setToast, onSaved }) {
+  const [quarterlyCall, setQuarterlyCall] = useState(member.quarterlyCall == null ? '' : String(member.quarterlyCall))
+  const [balance, setBalance] = useState(member.balance == null ? '' : String(member.balance))
+  const [busy, setBusy] = useState(false)
+
+  return (
+    <form
+      className="terminal-row"
+      onSubmit={async e => {
+        e.preventDefault()
+        if (busy) return
+        setBusy(true)
+        try {
+          onSaved(await actions.updateMemberFinances(member.id, { quarterlyCall, balance }))
+          setToast('Situation enregistrée')
+        } catch (error) { setToast(error.message) }
+        setBusy(false)
+      }}
+    >
+      <div>
+        <strong>{member.fullName || member.email}</strong>
+        <small>{member.unitLabel || 'Lot non renseigné'} · {roleLabel(member.role)}</small>
+      </div>
+      <div className="inline-form">
+        <label>Appel trimestriel (€)
+          <input type="number" min="0" step="0.01" inputMode="decimal" required value={quarterlyCall} onChange={e => setQuarterlyCall(e.target.value)} />
+        </label>
+        <label>Solde dû (€)
+          <input type="number" step="0.01" inputMode="decimal" required value={balance} onChange={e => setBalance(e.target.value)} />
+        </label>
+        <button className="ghost-btn" disabled={busy}><Check size={16} /> Enregistrer</button>
+      </div>
+    </form>
+  )
+}
+
 function MembersPanel({ actions, setToast }) {
   const [state, setState] = useState({
     loading: true, error: null, members: [], pending: [], roles: [], identityAdminAvailable: true,
@@ -1018,6 +1344,13 @@ function MembersPanel({ actions, setToast }) {
   const [role, setRole] = useState('resident')
   const [unitLabel, setUnitLabel] = useState('')
   const [busy, setBusy] = useState(false)
+  // One row action at a time: a double click must not send two Identity e-mails.
+  const [rowBusy, setRowBusy] = useState(null)
+  const runRow = async (key, action) => {
+    if (rowBusy) return
+    setRowBusy(key)
+    try { await action() } finally { setRowBusy(null) }
+  }
 
   const reload = async () => {
     setState(s => ({ ...s, loading: true }))
@@ -1128,24 +1461,24 @@ function MembersPanel({ actions, setToast }) {
                   <small>{p.email} · {roleLabel(p.role)}{p.unitLabel ? ` · ${p.unitLabel}` : ''} · en attente d'activation</small>
                 </div>
                 <button
-                  className="ghost-btn"
-                  onClick={async () => {
+                  className="ghost-btn" disabled={rowBusy !== null}
+                  onClick={() => runRow(`pending-${p.id}`, async () => {
                     try {
                       const result = await actions.retryPendingInvite(p.id)
-                      setToast(result?.message || 'Invitation relancée')
+                      setToast(result?.message || 'Relance transmise à Netlify Identity (réception non confirmée)')
                     } catch (error) { setToast(error.message) }
                     reload()
-                  }}
+                  })}
                 ><Mail size={16} /> Relancer l'invitation</button>
                 <button
-                  className="danger-btn"
-                  onClick={async () => {
+                  className="danger-btn" disabled={rowBusy !== null}
+                  onClick={() => window.confirm(`Annuler l’invitation de ${p.email} ?`) && runRow(`cancel-${p.id}`, async () => {
                     try {
                       await actions.cancelPendingInvite(p.id)
                       setToast('Invitation annulée')
                     } catch (error) { setToast(error.message) }
                     reload()
-                  }}
+                  })}
                 ><Trash2 size={16} /> Annuler</button>
               </div>
             ))}
@@ -1173,40 +1506,40 @@ function MembersPanel({ actions, setToast }) {
                     </div>
                     {m.activated === false && (
                       <button
-                        className="ghost-btn"
-                        onClick={async () => {
+                        className="ghost-btn" disabled={rowBusy !== null}
+                        onClick={() => runRow(`resend-${m.id}`, async () => {
                           try {
                             const result = await actions.resendMemberInvite(m.id)
-                            setToast(result?.message || 'Invitation renvoyée')
+                            setToast(result?.message || 'Demande de renvoi transmise à Netlify Identity (réception non confirmée)')
                           } catch (error) { setToast(error.message) }
                           reload()
-                        }}
+                        })}
                       ><Mail size={16} /> Renvoyer</button>
                     )}
                     <select
                       value={m.role}
-                      aria-label={`Rôle de ${m.email}`}
-                      onChange={async e => {
+                      aria-label={`Rôle de ${m.email}`} disabled={rowBusy !== null}
+                      onChange={e => { const next = e.target.value; runRow(`role-${m.id}`, async () => {
                         try {
-                          await actions.updateMember(m.id, { role: e.target.value })
+                          await actions.updateMember(m.id, { role: next })
                           setToast('Rôle mis à jour')
                           reload()
                         } catch (error) { setToast(error.message); reload() }
-                      }}
+                      }) }}
                     >
                       {(state.roles.length ? state.roles : ['resident', 'council_member', 'manager']).map(r => (
                         <option key={r} value={r}>{roleLabel(r)}</option>
                       ))}
                     </select>
                     <button
-                      className="danger-btn"
-                      onClick={async () => {
+                      className="danger-btn" disabled={rowBusy !== null}
+                      onClick={() => window.confirm(`Retirer l’accès de ${m.fullName || m.email} ? L’historique est conservé.`) && runRow(`remove-${m.id}`, async () => {
                         try {
                           await actions.removeMember(m.id)
                           setToast('Accès retiré')
                           reload()
                         } catch (error) { setToast(error.message) }
-                      }}
+                      })}
                     ><Trash2 size={16} /> Retirer</button>
                   </div>
                 ))}
@@ -1335,10 +1668,10 @@ function TicketModal({ ticket, onClose, publicView = false }) {
   )
 }
 
-function ComposeModal({ onClose, onPublish }) {
-  const [title, setTitle] = useState('')
-  const [body, setBody] = useState('')
-  const [isPublic, setIsPublic] = useState(true)
+function ComposeModal({ initial = null, onClose, onPublish }) {
+  const [title, setTitle] = useState(initial?.title ?? '')
+  const [body, setBody] = useState(initial?.body ?? '')
+  const [isPublic, setIsPublic] = useState(initial?.isPublic ?? true)
   const [busy, setBusy] = useState(false)
 
   return (
@@ -1353,7 +1686,7 @@ function ComposeModal({ onClose, onPublish }) {
         }}
       >
         <div className="modal-head">
-          <div><span className="overline">Communication</span><h2 id="compose-title">Publier une information</h2></div>
+          <div><span className="overline">Communication</span><h2 id="compose-title">{initial ? 'Modifier la communication' : 'Publier une information'}</h2></div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Fermer"><X /></button>
         </div>
         <label>Titre<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex. Coupure d'eau programmée" required maxLength={80} /></label>
@@ -1368,19 +1701,19 @@ function ComposeModal({ onClose, onPublish }) {
         </div>
         <div className="modal-actions">
           <button type="button" className="secondary-btn" onClick={onClose}>Annuler</button>
-          <button className="primary-btn" disabled={busy}><Mail /> {busy ? 'Publication…' : 'Publier'}</button>
+          <button className="primary-btn" disabled={busy}><Mail /> {busy ? 'Publication…' : initial ? 'Enregistrer' : 'Publier'}</button>
         </div>
       </form>
     </Modal>
   )
 }
 
-function EventModal({ onClose, onCreate }) {
-  const [title, setTitle] = useState('')
-  const [detail, setDetail] = useState('')
-  const [eventDate, setEventDate] = useState('')
-  const [eventTime, setEventTime] = useState('')
-  const [isPublic, setIsPublic] = useState(true)
+function EventModal({ initial = null, onClose, onCreate }) {
+  const [title, setTitle] = useState(initial?.title ?? '')
+  const [detail, setDetail] = useState(initial?.detail ?? '')
+  const [eventDate, setEventDate] = useState(initial?.eventDate ?? '')
+  const [eventTime, setEventTime] = useState(initial?.eventTime ?? '')
+  const [isPublic, setIsPublic] = useState(initial?.isPublic ?? true)
   const [busy, setBusy] = useState(false)
 
   return (
@@ -1395,7 +1728,7 @@ function EventModal({ onClose, onCreate }) {
         }}
       >
         <div className="modal-head">
-          <div><span className="overline">Agenda</span><h2 id="event-title">Ajouter une date</h2></div>
+          <div><span className="overline">Agenda</span><h2 id="event-title">{initial ? 'Modifier la date' : 'Ajouter une date'}</h2></div>
           <button type="button" className="icon-btn" onClick={onClose} aria-label="Fermer"><X /></button>
         </div>
         <label>Intitulé<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex. Maintenance ascenseur" required maxLength={80} /></label>
@@ -1410,7 +1743,7 @@ function EventModal({ onClose, onCreate }) {
         </label>
         <div className="modal-actions">
           <button type="button" className="secondary-btn" onClick={onClose}>Annuler</button>
-          <button className="primary-btn" disabled={busy}><CalendarDays /> {busy ? 'Ajout…' : 'Ajouter'}</button>
+          <button className="primary-btn" disabled={busy}><CalendarDays /> {busy ? 'Enregistrement…' : initial ? 'Enregistrer' : 'Ajouter'}</button>
         </div>
       </form>
     </Modal>
