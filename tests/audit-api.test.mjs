@@ -222,6 +222,50 @@ test('audit APIs: real policies, migrations, ownership periods and revocation', 
         assert.equal((await call('members', 'PATCH', { resendInvite: true }, { id: String(member.id) }, 'access-qa')).status, 403)
       } finally { globalThis.fetch = originalFetch; delete globalThis.__coprolinkAuditIdentity; as('manager') }
     })
+    await t.test('changing a legacy account email transfers only this building and preserves lots, finance and history', async () => {
+      as('manager')
+      const { rows: [a] } = await pg.query("INSERT INTO buildings(slug,name) VALUES ('email-qa','Email QA') RETURNING id")
+      const { rows: [b] } = await pg.query("INSERT INTO buildings(slug,name) VALUES ('email-other','Other Email QA') RETURNING id")
+      await pg.exec("INSERT INTO users(id,email,full_name) VALUES ('email-old','old-mail@example.invalid','Old Mail')")
+      await pg.query("INSERT INTO building_members(building_id,user_id,role,unit_label,quarterly_call,balance) VALUES ($1,'manager','manager','',0,0),($1,'email-old','resident','E-1',123,-45),($2,'email-old','resident','Other',999,888)", [a.id,b.id])
+      const { rows: [old] } = await pg.query("SELECT id FROM building_members WHERE building_id=$1 AND user_id='email-old'", [a.id])
+      const { rows: [manager] } = await pg.query("SELECT id FROM building_members WHERE building_id=$1 AND user_id='manager'", [a.id])
+      await pg.query("INSERT INTO building_people(building_id,user_id,email,full_name) VALUES ($1,'email-old','old-mail@example.invalid','Contact QA'),($2,'email-old','old-mail@example.invalid','Other Contact')", [a.id,b.id])
+      const identities = [{ id:'email-new', email:'new-mail@example.invalid', confirmedAt:'2026-01-01T00:00:00Z' }]
+      globalThis.__coprolinkAuditIdentity = { config: { url:'https://identity.invalid', token:'operator-test' }, listUsers:async()=>identities }
+      const originalFetch = globalThis.fetch
+      const requests = []
+      globalThis.fetch = async (url, options) => { requests.push([String(url),JSON.parse(options.body).email]); return Response.json({msg:'rate limit'}, {status:429}) }
+      try {
+        assert.equal((await call('members','PATCH',{email:'invalid'}, {id:String(old.id)}, 'email-qa')).status,422)
+        assert.equal((await call('members','PATCH',{email:'new-mail@example.invalid'}, {id:String(manager.id)}, 'email-qa')).status,409)
+        assert.equal(requests.length,0)
+        assert.equal((await call('members','PATCH',{email:'new-mail@example.invalid'}, {id:String(old.id)}, 'email-qa')).status,429)
+        assert.equal((await pg.query('SELECT ended_at FROM building_members WHERE id=$1',[old.id])).rows[0].ended_at,null)
+        globalThis.fetch = async (url, options) => { requests.push([String(url),JSON.parse(options.body).email]); return Response.json({}) }
+        const response = await call('members','PATCH',{email:' NEW-MAIL@example.invalid '}, {id:String(old.id)}, 'email-qa')
+        assert.equal(response.status,200)
+        const result = await response.json()
+        assert.equal(result.deliveryConfirmed,false)
+        const rows = (await pg.query("SELECT user_id,role,unit_label,quarterly_call::text,balance::text,ended_reason FROM building_members WHERE building_id=$1 ORDER BY id",[a.id])).rows
+        assert.equal(rows.find(r=>r.user_id==='email-old').ended_reason,'email_changed')
+        assert.deepEqual(rows.find(r=>r.user_id==='email-new'),{user_id:'email-new',role:'resident',unit_label:'E-1',quarterly_call:'123.00',balance:'-45.00',ended_reason:''})
+        assert.equal((await pg.query("SELECT ended_at FROM building_members WHERE building_id=$1 AND user_id='email-old'",[b.id])).rows[0].ended_at,null)
+        assert.equal((await pg.query("SELECT email FROM users WHERE id='email-old'")).rows[0].email,'old-mail@example.invalid')
+        assert.deepEqual((await pg.query('SELECT building_id,user_id,email FROM building_people WHERE building_id IN ($1,$2) ORDER BY building_id',[a.id,b.id])).rows,[{building_id:a.id,user_id:'email-new',email:'new-mail@example.invalid'},{building_id:b.id,user_id:'email-old',email:'old-mail@example.invalid'}])
+        assert.deepEqual(requests.at(-1),['https://identity.invalid/recover','new-mail@example.invalid'])
+        const count = requests.length
+        assert.equal((await call('members','PATCH',{email:'new-mail@example.invalid'}, {id:String(result.id)}, 'email-qa')).status,200)
+        assert.equal(requests.length,count)
+        const {rows:[pending]}=await pg.query("INSERT INTO pending_members(building_id,email,role,unit_label) VALUES ($1,'typo@example.invalid','resident','E-2') RETURNING id",[a.id])
+        assert.equal((await call('members','PATCH',{email:'new-mail@example.invalid'},{pendingId:String(pending.id)},'email-qa')).status,409)
+        assert.equal((await call('members','PATCH',{email:'corrected@example.invalid'},{pendingId:String(pending.id)},'email-qa')).status,200)
+        assert.equal((await pg.query('SELECT email FROM pending_members WHERE id=$1',[pending.id])).rows[0].email,'corrected@example.invalid')
+        assert.equal(requests.length,count)
+        as('tenant')
+        assert.equal((await call('members','PATCH',{email:'another@example.invalid'},{id:String(result.id)},'email-qa')).status,403)
+      } finally {globalThis.fetch=originalFetch;delete globalThis.__coprolinkAuditIdentity;as('manager')}
+    })
     await t.test('person invitations ask Identity, never claim delivery and attach the right lot', async () => {
       as('manager')
       const identity = { accounts: [], calls: [], fail: null }

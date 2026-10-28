@@ -22,7 +22,7 @@ export function PeopleAccessList({ model, access, onSaveEmail, onInvite }) {
   })}</div>
 }
 
-export default function SyndicPeopleAccess({ buildingSlug, onAccessChanged }) {
+export default function SyndicPeopleAccess({ buildingSlug, refreshToken, onAccessChanged }) {
   const [state, setState] = useState({ model: null, access: [], error: '', loading: true })
   const load = async () => {
     const [model, access] = await Promise.all([apiV3.model(buildingSlug), apiV3.accessStates(buildingSlug)])
@@ -30,12 +30,12 @@ export default function SyndicPeopleAccess({ buildingSlug, onAccessChanged }) {
   }
   useEffect(() => {
     let cancelled = false
-    setState({ model: null, access: [], error: '', loading: true })
+    setState(current => ({ ...current, error: '', loading: true }))
     Promise.all([apiV3.model(buildingSlug), apiV3.accessStates(buildingSlug)])
       .then(([model, access]) => { if (!cancelled) setState({ model, access: access.access || [], error: '', loading: false }) })
       .catch(error => { if (!cancelled) setState({ model: null, access: [], error: error.message, loading: false }) })
     return () => { cancelled = true }
-  }, [buildingSlug])
+  }, [buildingSlug, refreshToken])
   const saveEmail = async (person, email) => {
     await apiV3.update(buildingSlug, 'person', person.id, { email })
     await load()
