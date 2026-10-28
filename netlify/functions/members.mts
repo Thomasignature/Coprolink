@@ -1,7 +1,7 @@
 import type { Config, Context } from "@netlify/functions";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { buildingMembers, pendingMembers, ROLES, users, type Role } from "../../db/schema.js";
+import { buildingMembers, buildings, pendingMembers, ROLES, users, type Role } from "../../db/schema.js";
 import { authorize, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import {
   IdentityAdminUnavailableError,
@@ -13,6 +13,7 @@ import {
   sendAccountActivationLink,
   type IdentityAccount,
 } from "../lib/identity.mts";
+import { buildingPeople, buildingUnits, unitPersonRelations } from "../../db/schema-v3.js";
 import { readString, writeAudit } from "../lib/data.mts";
 
 const ASSIGNABLE_ROLES: readonly Role[] = ROLES.filter((r) => r !== "platform_admin");
@@ -45,14 +46,25 @@ const grantMembership = async (
   account: IdentityAccount,
   input: { role: Role; unitLabel: string; shareLabel: string },
 ) => {
-  const [member] = await db
-    .insert(buildingMembers)
-    .values({ buildingId, userId: account.id, ...input })
-    .onConflictDoUpdate({ target: [buildingMembers.buildingId, buildingMembers.userId], set: { ...input, endedAt: null, endedReason: "" } })
-    .returning();
-
-  await db.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, buildingId), eq(pendingMembers.email, email)));
-  return member;
+  return db.transaction(async tx => {
+    await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, buildingId)).for("update");
+    const [previous] = await tx.select().from(buildingMembers).where(and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.userId, account.id)));
+    if (previous?.role === "manager" && !previous.endedAt && input.role !== "manager") {
+      const managers = await tx.select({ id: buildingMembers.id }).from(buildingMembers).where(and(eq(buildingMembers.buildingId, buildingId), eq(buildingMembers.role, "manager"), isNull(buildingMembers.endedAt)));
+      if (managers.length <= 1) throw new HttpError(409, "Désignez un autre gestionnaire avant de retirer le dernier");
+    }
+    const people = await tx.select({ id: buildingPeople.id }).from(buildingPeople).where(and(eq(buildingPeople.buildingId, buildingId), sql`lower(${buildingPeople.email}) = ${email.toLowerCase()}`));
+    if (people.length && (input.role === "resident" || input.role === "council_member")) {
+      const links = await tx.select({ id: unitPersonRelations.id }).from(unitPersonRelations)
+        .innerJoin(buildingUnits, eq(buildingUnits.id, unitPersonRelations.unitId))
+        .where(and(inArray(unitPersonRelations.personId, people.map(p => p.id)), eq(buildingUnits.buildingId, buildingId), isNull(unitPersonRelations.endDate)));
+      if (!links.length) throw new HttpError(409, "Ajoutez une nouvelle relation active avant de réattribuer l’accès à cette personne");
+    }
+    const [member] = await tx.insert(buildingMembers).values({ buildingId, userId: account.id, ...input })
+      .onConflictDoUpdate({ target: [buildingMembers.buildingId, buildingMembers.userId], set: { ...input, endedAt: null, endedReason: "" } }).returning();
+    await tx.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, buildingId), eq(pendingMembers.email, email)));
+    return member;
+  });
 };
 
 const pendingNotice = (email: string) =>
@@ -217,6 +229,7 @@ export default async (req: Request, context: Context) => {
     const scope = and(eq(buildingMembers.id, memberId), eq(buildingMembers.buildingId, ctx.buildingId));
     const [target] = await db.select().from(buildingMembers).where(scope).limit(1);
     if (!target) return Response.json({ error: "Membre introuvable" }, { status: 404 });
+    if (target.endedAt) throw new HttpError(409, "Cet accès est terminé ; utilisez une nouvelle attribution explicite");
 
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
@@ -253,13 +266,33 @@ export default async (req: Request, context: Context) => {
       }
 
       const role = assertAssignableRole(body.role ?? target.role);
-      const [updated] = await db.update(buildingMembers).set({ role, unitLabel: readString(body.unitLabel, "lot", { max: 80, required: false }) || target.unitLabel, shareLabel: readString(body.shareLabel, "quotité", { max: 40, required: false }) || target.shareLabel }).where(scope).returning();
+      const [updated] = await db.transaction(async tx => {
+        await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+        const [current] = await tx.select().from(buildingMembers).where(scope);
+        if (current.endedAt) throw new HttpError(409, "Cet accès est terminé");
+        if (current.role === "manager" && role !== "manager") {
+          const managers = await tx.select({ id: buildingMembers.id }).from(buildingMembers).where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.role, "manager"), isNull(buildingMembers.endedAt)));
+          if (managers.length <= 1) throw new HttpError(409, "Désignez un autre gestionnaire avant de retirer le dernier");
+        }
+        return tx.update(buildingMembers).set({ role, unitLabel: body.unitLabel === undefined ? current.unitLabel : readString(body.unitLabel, "lot", { max: 80, required: false }), shareLabel: body.shareLabel === undefined ? current.shareLabel : readString(body.shareLabel, "quotité", { max: 40, required: false }) }).where(scope).returning();
+      });
       await writeAudit(ctx, { action: "member.updated", entityType: "building_member", entityId: updated.id, summary: `Rôle du membre #${updated.id} défini à « ${updated.role} ».` });
       return Response.json({ id: updated.id, role: updated.role, unitLabel: updated.unitLabel });
     }
 
     if (req.method === "DELETE") {
-      await db.update(buildingMembers).set({ endedAt: new Date(), endedReason: target.role === "manager" ? "mandate_ended" : "access_revoked" }).where(scope);
+      await db.transaction(async tx => {
+        await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+        const [current] = await tx.select().from(buildingMembers).where(scope);
+        if (current.endedAt) throw new HttpError(409, "Cet accès est déjà terminé");
+        if (current.role === "manager") {
+          const managers = await tx.select({ id: buildingMembers.id }).from(buildingMembers).where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.role, "manager"), isNull(buildingMembers.endedAt)));
+          if (managers.length <= 1) throw new HttpError(409, "Désignez un autre gestionnaire avant de retirer le dernier");
+        }
+        await tx.update(buildingMembers).set({ endedAt: new Date(), endedReason: current.role === "manager" ? "mandate_ended" : "access_revoked" }).where(scope);
+        const [account] = await tx.select({ email: users.email }).from(users).where(eq(users.id, current.userId));
+        if (account) await tx.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, ctx.buildingId), sql`lower(${pendingMembers.email}) = ${account.email.toLowerCase()}`));
+      });
       await writeAudit(ctx, { action: "member.revoked", entityType: "building_member", entityId: memberId, summary: `Accès du membre #${memberId} retiré.` });
       return Response.json({ id: memberId, removed: true });
     }

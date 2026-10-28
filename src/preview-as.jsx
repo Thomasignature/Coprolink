@@ -63,6 +63,7 @@ const filterFor = (workspace, role) => {
   const base = {
     ...workspace,
     member: null,
+    lots: [],
     myTickets: [],
     buildingTickets: residentTickets(workspace),
     capabilities: [],

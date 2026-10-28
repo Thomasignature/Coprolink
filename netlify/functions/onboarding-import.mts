@@ -4,6 +4,7 @@ import { db } from "../../db/index.js";
 import {
   buildingPeople, buildingUnits, personVisibilityPreferences, unitPersonRelations,
 } from "../../db/schema-v3.js";
+import { buildings } from "../../db/schema.js";
 import { authorizeSyndicOperator, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import { matchImportPerson } from "../lib/import-matching.mts";
 import { writeAudit } from "../lib/data.mts";
@@ -45,18 +46,21 @@ export default async (req: Request) => {
       }
 
       try {
-        let [unit] = await db.select().from(buildingUnits)
+        const counts = { unitsCreated: 0, peopleCreated: 0, relationsCreated: 0 };
+        await db.transaction(async tx => {
+          await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+        let [unit] = await tx.select().from(buildingUnits)
           .where(and(eq(buildingUnits.buildingId, ctx.buildingId), eq(buildingUnits.label, unitLabel))).limit(1);
         if (!unit) {
-          [unit] = await db.insert(buildingUnits).values({
+          [unit] = await tx.insert(buildingUnits).values({
             buildingId: ctx.buildingId,
             label: unitLabel,
             floor,
             shareLabel,
           }).returning();
-          result.unitsCreated += 1;
+          counts.unitsCreated += 1;
         } else if ((floor && floor !== unit.floor) || (shareLabel && shareLabel !== unit.shareLabel)) {
-          [unit] = await db.update(buildingUnits).set({
+          [unit] = await tx.update(buildingUnits).set({
             ...(floor ? { floor } : {}),
             ...(shareLabel ? { shareLabel } : {}),
             updatedAt: new Date(),
@@ -65,11 +69,11 @@ export default async (req: Request) => {
 
         let person = null as any;
         if (email) {
-          [person] = await db.select().from(buildingPeople)
+          [person] = await tx.select().from(buildingPeople)
             .where(and(eq(buildingPeople.buildingId, ctx.buildingId), sql`lower(${buildingPeople.email}) = ${email}`)).limit(1);
         }
         if (!person && !email) {
-          const candidates = await db.select({
+          const candidates = await tx.select({
             id: buildingPeople.id, fullName: buildingPeople.fullName, email: buildingPeople.email,
           }).from(buildingPeople).innerJoin(unitPersonRelations, eq(unitPersonRelations.personId, buildingPeople.id))
             .where(and(eq(buildingPeople.buildingId, ctx.buildingId), eq(unitPersonRelations.unitId, unit.id),
@@ -77,17 +81,17 @@ export default async (req: Request) => {
           person = matchImportPerson(candidates, fullName);
         }
         if (!person) {
-          [person] = await db.insert(buildingPeople).values({
+          [person] = await tx.insert(buildingPeople).values({
             buildingId: ctx.buildingId,
             fullName,
             email,
           }).returning();
-          await db.insert(personVisibilityPreferences).values({ personId: person.id, directoryVisible: true, hallVisible: false }).onConflictDoNothing();
-          result.peopleCreated += 1;
+          await tx.insert(personVisibilityPreferences).values({ personId: person.id, directoryVisible: true, hallVisible: false }).onConflictDoNothing();
+          counts.peopleCreated += 1;
         }
 
         for (const relationType of PRESETS[preset]) {
-          const [existing] = await db.select({ id: unitPersonRelations.id }).from(unitPersonRelations)
+          const [existing] = await tx.select({ id: unitPersonRelations.id }).from(unitPersonRelations)
             .where(and(
               eq(unitPersonRelations.unitId, unit.id),
               eq(unitPersonRelations.personId, person.id),
@@ -95,10 +99,14 @@ export default async (req: Request) => {
               sql`${unitPersonRelations.endDate} IS NULL`,
             )).limit(1);
           if (!existing) {
-            await db.insert(unitPersonRelations).values({ unitId: unit.id, personId: person.id, relationType, shareLabel });
-            result.relationsCreated += 1;
+            await tx.insert(unitPersonRelations).values({ unitId: unit.id, personId: person.id, relationType, shareLabel });
+            counts.relationsCreated += 1;
           }
         }
+        });
+        result.unitsCreated += counts.unitsCreated;
+        result.peopleCreated += counts.peopleCreated;
+        result.relationsCreated += counts.relationsCreated;
       } catch (error: any) {
         result.skipped += 1;
         result.errors.push({ row: sourceRow, message: error?.message || "Erreur d’import" });

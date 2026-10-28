@@ -74,10 +74,10 @@ export const api = {
     request(`/api/tickets${buildingQuery(slug)}`, { method: 'POST', body: data }),
   reportFromTerminal: data =>
     request('/api/tickets', { method: 'POST', body: data, terminal: true }),
-  updateTicketStatus: (slug, reference, status, note = '') =>
+  updateTicketStatus: (slug, reference, status, note = '', schedule = {}) =>
     request(`/api/tickets/${encodeURIComponent(reference)}${buildingQuery(slug)}`, {
       method: 'PATCH',
-      body: { status, note },
+      body: { status, note, ...schedule },
     }),
 
   publishAnnouncement: (slug, data) =>
@@ -124,11 +124,12 @@ export const api = {
     }
   },
 
+  notificationStatus: slug => request(`/api/notification-status${buildingQuery(slug)}`),
   finances: slug => request(`/api/finances${buildingQuery(slug)}`),
   updateBuildingFinances: (slug, building) =>
     request(`/api/finances${buildingQuery(slug)}`, { method: 'PATCH', body: { building } }),
-  updateMemberFinances: (slug, memberId, data) =>
-    request(`/api/finances${buildingQuery(slug)}`, { method: 'PATCH', body: { memberId, ...data } }),
+  updateMemberFinances: (slug, relationId, data) =>
+    request(`/api/finances${buildingQuery(slug)}`, { method: 'PATCH', body: { relationId, ...data } }),
 
   listAssemblies: slug => request(`/api/assemblies${buildingQuery(slug)}`),
   createAssembly: (slug, data) =>

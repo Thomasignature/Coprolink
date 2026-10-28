@@ -12,7 +12,7 @@ const ROLE_CAPABILITIES: Record<Role, readonly string[]> = {
   resident: ["building:read", "tickets:read:own", "tickets:create", "documents:read:private"],
   council_member: [
     "building:read", "tickets:read:own", "tickets:read:all", "tickets:create",
-    "documents:read:private", "finance:read:own", "audit:read",
+    "documents:read:private", "audit:read",
   ],
   manager: [
     "building:read", "tickets:read:own", "tickets:read:all", "tickets:create", "tickets:update",
@@ -111,16 +111,25 @@ const claimPendingMemberships = async (userId: string, email: string) => {
   if (pending.length === 0) return;
 
   for (const row of pending) {
-    await db.insert(buildingMembers).values({
-      buildingId: row.buildingId,
-      userId,
-      role: row.role,
-      unitLabel: row.unitLabel,
-      shareLabel: row.shareLabel,
-    }).onConflictDoUpdate({
-      target: [buildingMembers.buildingId, buildingMembers.userId],
-      set: { role: row.role, unitLabel: row.unitLabel, shareLabel: row.shareLabel, endedAt: null, endedReason: "" },
+    const claimed = await db.transaction(async tx => {
+      await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, row.buildingId)).for("update");
+      const [stillPending] = await tx.select().from(pendingMembers).where(eq(pendingMembers.id, row.id));
+      if (!stillPending) return false;
+      const [existing] = await tx.select().from(buildingMembers).where(and(eq(buildingMembers.buildingId, row.buildingId), eq(buildingMembers.userId, userId)));
+      if (existing?.endedAt) return false;
+      const people = await tx.select({ id: buildingPeople.id }).from(buildingPeople).where(and(eq(buildingPeople.buildingId, row.buildingId), sql`lower(${buildingPeople.email}) = ${needle}`));
+      if (row.role === "resident" || row.role === "council_member") {
+        if (people.length) {
+          const active = await tx.select({ id: unitPersonRelations.id }).from(unitPersonRelations)
+            .innerJoin(buildingUnits, eq(buildingUnits.id, unitPersonRelations.unitId))
+            .where(and(inArray(unitPersonRelations.personId, people.map(p => p.id)), eq(buildingUnits.buildingId, row.buildingId), isNull(unitPersonRelations.endDate)));
+          if (!active.length) return false;
+        }
+      }
+      await tx.insert(buildingMembers).values({ buildingId: row.buildingId, userId, role: row.role, unitLabel: row.unitLabel, shareLabel: row.shareLabel }).onConflictDoNothing();
+      return true;
     });
+    if (!claimed) continue;
 
     await linkBuildingPersonAccount(row.buildingId, needle, userId);
 
@@ -258,7 +267,7 @@ export const authorize = async (
     }
 
     const capabilities = [...buildCapabilities(membership.role, principal.isPlatformAdmin)];
-    if (membership.role === "resident") capabilities.push(...await residentRelationCapabilities(membership.buildingId, principal.userId));
+    if (membership.role === "resident" || membership.role === "council_member") capabilities.push(...await residentRelationCapabilities(membership.buildingId, principal.userId));
     context = {
       principal,
       buildingId: membership.buildingId,

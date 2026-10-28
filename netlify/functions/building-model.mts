@@ -1,7 +1,7 @@
 import type { Config } from "@netlify/functions";
-import { and, asc, count, eq, isNull } from "drizzle-orm";
+import { and, asc, count, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { buildingMembers } from "../../db/schema.js";
+import { buildingMembers, buildings, pendingMembers } from "../../db/schema.js";
 import {
   assemblyResponses, buildingPeople, buildingProfessionals, buildingReferents, buildingUnits,
   personVisibilityPreferences, PROFESSIONAL_TYPES, RELATION_TYPES, unitPersonRelations,
@@ -9,7 +9,7 @@ import {
 } from "../../db/schema-v3.js";
 import { authorizeCoproLinkAdmin, authorizeSyndicOperator, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import { readString, writeAudit } from "../lib/data.mts";
-import { canPermanentlyDeletePerson, isIsoDate, readEndReason, shouldRevokeBuildingAccess } from "../lib/lifecycle-policy.mts";
+import { canPermanentlyDeletePerson, isIsoDate, readEndReason, shouldRevokeBuildingAccess, validateRelationEnd, businessDate } from "../lib/lifecycle-policy.mts";
 
 const readId = (value: unknown, field = "id") => {
   const id = Number(value);
@@ -80,8 +80,8 @@ const assertUnitInBuilding = async (buildingId: number, unitId: number) => {
   return unit;
 };
 
-const assertPersonInBuilding = async (buildingId: number, personId: number) => {
-  const [person] = await db.select().from(buildingPeople)
+const assertPersonInBuilding = async (buildingId: number, personId: number, executor: Pick<typeof db, "select"> = db) => {
+  const [person] = await executor.select().from(buildingPeople)
     .where(and(eq(buildingPeople.id, personId), eq(buildingPeople.buildingId, buildingId))).limit(1);
   if (!person) throw new HttpError(404, "Personne introuvable");
   return person;
@@ -139,13 +139,17 @@ export default async (req: Request) => {
         await assertUnitInBuilding(ctx.buildingId, unitId);
         await assertPersonInBuilding(ctx.buildingId, personId);
         const relationType = assertRelationType(body.relationType);
-        const [created] = await db.insert(unitPersonRelations).values({
+        if (body.startDate && (!isIsoDate(body.startDate) || body.startDate > businessDate())) throw new HttpError(422, "Date de début invalide ou future");
+        const [created] = await db.transaction(async tx => {
+          await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+          return tx.insert(unitPersonRelations).values({
           unitId,
           personId,
           relationType,
           shareLabel: optionalString(body.shareLabel, "quotité", 40),
           startDate: typeof body.startDate === "string" && body.startDate ? body.startDate : null,
         }).returning();
+        });
         await writeAudit(ctx, { action: "relation.created", entityType: "unit_person_relation", entityId: created.id, summary: `Lien ${relationType} ajouté au lot.` });
         return Response.json(created, { status: 201 });
       }
@@ -222,13 +226,20 @@ export default async (req: Request) => {
         const [relation] = await db.select().from(unitPersonRelations).where(eq(unitPersonRelations.id, id)).limit(1);
         if (!relation) throw new HttpError(404, "Lien introuvable");
         await assertUnitInBuilding(ctx.buildingId, relation.unitId);
+        if (body.relationType !== undefined && body.relationType !== relation.relationType) throw new HttpError(409, "Terminez la relation puis créez une nouvelle période pour changer de type");
         const ending = body.endDate !== undefined && body.endDate !== null && body.endDate !== "";
-        if (ending && !isIsoDate(body.endDate)) throw new HttpError(422, "Date de fin invalide");
+        if (relation.endDate) throw new HttpError(409, "Une relation terminée est en lecture seule. Créez une nouvelle période.");
+        if (ending) {
+          try { validateRelationEnd(relation, body.endDate); } catch (error) { throw new HttpError(422, (error as Error).message); }
+        }
         let endReason = "";
         if (ending) {
           try { endReason = readEndReason(body.endReason); } catch { throw new HttpError(422, "Motif de fin invalide"); }
         }
         const [updated] = await db.transaction(async (tx) => {
+          await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+          const [current] = await tx.select().from(unitPersonRelations).where(eq(unitPersonRelations.id, id)).for("update");
+          if (current.endDate) throw new HttpError(409, "Cette relation est déjà terminée");
           const [result] = await tx.update(unitPersonRelations).set({
           ...(body.relationType !== undefined ? { relationType: assertRelationType(body.relationType) } : {}),
           ...(body.shareLabel !== undefined ? { shareLabel: optionalString(body.shareLabel, "quotité", 40) } : {}),
@@ -243,13 +254,16 @@ export default async (req: Request) => {
                 eq(buildingUnits.buildingId, ctx.buildingId),
                 isNull(unitPersonRelations.endDate),
               ));
-            const person = await assertPersonInBuilding(ctx.buildingId, relation.personId);
+            const person = await assertPersonInBuilding(ctx.buildingId, relation.personId, tx);
+            if (shouldRevokeBuildingAccess(activeRelations)) {
+              await tx.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, ctx.buildingId), sql`lower(${pendingMembers.email}) = ${person.email.trim().toLowerCase()}`));
+            }
             if (person.userId && shouldRevokeBuildingAccess(activeRelations)) {
               await tx.update(buildingMembers).set({ endedAt: new Date(), endedReason: endReason })
                 .where(and(
                   eq(buildingMembers.buildingId, ctx.buildingId),
                   eq(buildingMembers.userId, person.userId),
-                  eq(buildingMembers.role, "resident"),
+                  sql`${buildingMembers.role} IN ('resident', 'council_member')`,
                   isNull(buildingMembers.endedAt),
                 ));
             }
@@ -276,8 +290,15 @@ export default async (req: Request) => {
           .where(and(eq(buildingProfessionals.id, id), eq(buildingProfessionals.buildingId, ctx.buildingId))).limit(1);
         if (!existing) throw new HttpError(404, "Professionnel introuvable");
         const endingSyndic = existing.professionalType === "syndic" && body.endedAt !== undefined && body.endedAt !== null && body.endedAt !== "";
-        if (endingSyndic && !isIsoDate(body.endedAt)) throw new HttpError(422, "Date de fin de mandat invalide");
+        if (endingSyndic) {
+          try { validateRelationEnd({ startDate: existing.startedAt, endDate: existing.endedAt }, body.endedAt); } catch (error) { throw new HttpError(422, (error as Error).message); }
+        }
         const [updated] = await db.transaction(async (tx) => {
+          await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+          if (endingSyndic && existing.userId) {
+            const managers = await tx.select({ userId: buildingMembers.userId }).from(buildingMembers).where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.role, "manager"), isNull(buildingMembers.endedAt)));
+            if (!managers.some(m => m.userId !== existing.userId)) throw new HttpError(409, "Désignez le nouveau syndic avant de terminer le dernier mandat actif");
+          }
           const [result] = await tx.update(buildingProfessionals).set({
           ...(body.professionalType !== undefined ? { professionalType: assertProfessionalType(body.professionalType) } : {}),
           ...(body.organizationName !== undefined ? { organizationName: optionalString(body.organizationName, "organisation", 160) } : {}),
@@ -330,6 +351,8 @@ export default async (req: Request) => {
         await db.update(buildingReferents).set({ endedAt: new Date() })
           .where(and(eq(buildingReferents.id, id), eq(buildingReferents.buildingId, ctx.buildingId)));
       } else if (entity === "professional") {
+        const [professional] = await db.select().from(buildingProfessionals).where(and(eq(buildingProfessionals.id, id), eq(buildingProfessionals.buildingId, ctx.buildingId)));
+        if (professional?.professionalType === "syndic" && professional.userId) throw new HttpError(409, "Utilisez la fin de mandat pour retirer ce syndic et contrôler ses accès");
         await db.update(buildingProfessionals).set({ isActive: false, endedAt: new Date().toISOString().slice(0, 10) })
           .where(and(eq(buildingProfessionals.id, id), eq(buildingProfessionals.buildingId, ctx.buildingId)));
       } else {

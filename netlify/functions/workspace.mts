@@ -1,3 +1,4 @@
+import { loadResidentLots } from "../lib/resident-lots.mts";
 import type { Config } from "@netlify/functions";
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { documentAccessLevels } from "../lib/document-policy.mts";
@@ -82,13 +83,7 @@ export default async (req: Request) => {
           .limit(25)
       : [];
 
-    const [membership] = myUserId
-      ? await db
-          .select()
-          .from(buildingMembers)
-          .where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.userId, myUserId)))
-          .limit(1)
-      : [];
+    const myLots = myUserId ? await loadResidentLots(ctx.buildingId, myUserId, ctx.can("finance:read:own")) : [];
 
     return Response.json(
       {
@@ -106,15 +101,9 @@ export default async (req: Request) => {
           yearlySpent: Number(building.yearlySpent),
           healthScore: building.healthScore,
         },
-        // Situation financière personnelle : jamais celle d'un autre lot.
-        member: membership
-          ? {
-              unitLabel: membership.unitLabel,
-              shareLabel: membership.shareLabel,
-              quarterlyCall: Number(membership.quarterlyCall),
-              balance: Number(membership.balance),
-            }
-          : null,
+        // Each lot and amount comes from the active V3 relation, never a copied label.
+        lots: myLots,
+        member: myLots[0] ?? null,
         myTickets,
         buildingTickets,
         announcements: announcementRows.map((a) => ({

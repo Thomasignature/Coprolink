@@ -54,7 +54,7 @@ export default async (req: Request, context: Context) => {
       const status = assertTicketStatus(body.status);
       const note = readString(body.note, "note", { max: 500, required: false });
 
-      const ticket = await changeTicketStatus(ctx, reference, status, note);
+      const ticket = await changeTicketStatus(ctx, reference, status, note, { scheduledOn: body.scheduledOn, scheduledTime: body.scheduledTime });
       const timelines = await loadTicketTimeline([ticket.id]);
       return Response.json(serializeTicket(ticket, timelines.get(ticket.id) ?? []));
     }

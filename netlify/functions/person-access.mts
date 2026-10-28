@@ -1,7 +1,7 @@
 import type { Config } from "@netlify/functions";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
-import { buildingMembers, pendingMembers, users } from "../../db/schema.js";
+import { buildingMembers, pendingMembers, users, buildings } from "../../db/schema.js";
 import { buildingPeople, unitPersonRelations, buildingUnits } from "../../db/schema-v3.js";
 import { authorizeCoproLinkAdmin, authorizeSyndicOperator, HttpError, jsonError, linkBuildingPersonAccount, readBuildingSlug } from "../lib/auth.mts";
 import {
@@ -22,18 +22,18 @@ const findMirroredAccount = async (email: string) => {
   return row ?? null;
 };
 
-const mirrorAccount = async (account: IdentityAccount, email: string, fullName: string) => {
-  await db.insert(users).values({ id: account.id, email: account.email || email, fullName: account.fullName || fullName })
+const mirrorAccount = async (account: IdentityAccount, email: string, fullName: string, executor: Pick<typeof db, "insert"> = db) => {
+  await executor.insert(users).values({ id: account.id, email: account.email || email, fullName: account.fullName || fullName })
     .onConflictDoUpdate({ target: users.id, set: { email: account.email || email, fullName: account.fullName || fullName } });
 };
 
-const unitForPerson = async (buildingId: number, personId: number) => {
-  const [row] = await db.select({ label: buildingUnits.label, shareLabel: unitPersonRelations.shareLabel })
-    .from(unitPersonRelations)
-    .innerJoin(buildingUnits, eq(unitPersonRelations.unitId, buildingUnits.id))
-    .where(and(eq(unitPersonRelations.personId, personId), eq(buildingUnits.buildingId, buildingId)))
-    .limit(1);
-  return row ?? { label: "", shareLabel: "" };
+const activeUnitsForPerson = async (tx: Pick<typeof db, "select">, buildingId: number, personId: number) => {
+  const rows = await tx.select({ label: buildingUnits.label, shareLabel: unitPersonRelations.shareLabel })
+    .from(unitPersonRelations).innerJoin(buildingUnits, eq(unitPersonRelations.unitId, buildingUnits.id))
+    .where(and(eq(unitPersonRelations.personId, personId), eq(buildingUnits.buildingId, buildingId), isNull(unitPersonRelations.endDate)))
+    .orderBy(buildingUnits.label, unitPersonRelations.id);
+  if (!rows.length) throw new HttpError(409, "Aucune relation active. Ajoutez une nouvelle période avant de donner accès à cette personne.");
+  return rows;
 };
 
 export default async (req: Request) => {
@@ -75,8 +75,8 @@ export default async (req: Request) => {
     const email = person.email.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(422, "Ajoutez une adresse e-mail valide à cette personne");
 
-    const unit = await unitForPerson(ctx.buildingId, person.id);
-    const membership = { role: "resident" as const, unitLabel: unit.label || "", shareLabel: unit.shareLabel || "" };
+    // Reject historical people before calling Identity. Recheck under lock below.
+    await activeUnitsForPerson(db, ctx.buildingId, person.id);
 
     const mirrored = await findMirroredAccount(email);
     const lookup = mirrored ? { account: null, unavailable: null } : await lookupAccountByEmail(email);
@@ -88,14 +88,19 @@ export default async (req: Request) => {
       isDuplicate: error => error instanceof IdentityEmailTakenError,
     });
 
-    await mirrorAccount(account, email, person.fullName);
-    await db.insert(buildingMembers).values({ buildingId: ctx.buildingId, userId: account.id, ...membership })
-      .onConflictDoUpdate({
-        target: [buildingMembers.buildingId, buildingMembers.userId],
-        set: { ...membership, endedAt: null, endedReason: "" },
-      });
-    await linkBuildingPersonAccount(ctx.buildingId, email, account.id);
-    await db.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, ctx.buildingId), eq(pendingMembers.email, email)));
+    await db.transaction(async tx => {
+      await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+      const units = await activeUnitsForPerson(tx, ctx.buildingId, person.id);
+      const membership = { role: "resident" as const, unitLabel: units[0].label, shareLabel: units[0].shareLabel };
+      await mirrorAccount(account, email, person.fullName, tx);
+      const [existing] = await tx.select().from(buildingMembers).where(and(eq(buildingMembers.buildingId, ctx.buildingId), eq(buildingMembers.userId, account.id)));
+      // Sending a resident link must never demote a manager/council member.
+      await tx.insert(buildingMembers).values({ buildingId: ctx.buildingId, userId: account.id, ...membership })
+        .onConflictDoUpdate({ target: [buildingMembers.buildingId, buildingMembers.userId],
+          set: { ...membership, role: existing && !existing.endedAt ? existing.role : "resident", endedAt: null, endedReason: "" } });
+      await tx.update(buildingPeople).set({ userId: account.id, updatedAt: new Date() }).where(eq(buildingPeople.id, person.id));
+      await tx.delete(pendingMembers).where(and(eq(pendingMembers.buildingId, ctx.buildingId), eq(pendingMembers.email, email)));
+    });
 
     await writeAudit(ctx, {
       action: invited ? "access.invited" : "access.resent",

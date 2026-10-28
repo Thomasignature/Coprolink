@@ -25,10 +25,19 @@ export function Logo({ compact = false }) {
 function Modal({ onClose, labelledBy, className = 'modal-card', backdropClass = 'modal-backdrop', children }) {
   const panel = useRef(null)
   useEffect(() => {
-    const onKey = e => { if (e.key === 'Escape') onClose() }
+    const trigger = document.activeElement
+    const onKey = e => {
+      if (e.key === 'Escape') onClose()
+      if (e.key !== 'Tab') return
+      const nodes = [...(panel.current?.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex="0"]') || [])]
+      const first = nodes[0]; const last = nodes.at(-1)
+      if (!first) { e.preventDefault(); return }
+      if (e.shiftKey && (document.activeElement === first || document.activeElement === panel.current)) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && (document.activeElement === last || document.activeElement === panel.current)) { e.preventDefault(); first.focus() }
+    }
     addEventListener('keydown', onKey)
     panel.current?.focus()
-    return () => removeEventListener('keydown', onKey)
+    return () => { removeEventListener('keydown', onKey); if (trigger?.isConnected) trigger.focus() }
   }, [onClose])
 
   return (
@@ -703,9 +712,9 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
     resolved: tickets.filter(t => t.status === 'resolved').length,
   }
 
-  const changeStatus = async (ticket, status) => {
+  const changeStatus = async (ticket, status, schedule = {}) => {
     try {
-      const updated = await actions.updateTicketStatus(ticket.reference, status)
+      const updated = await actions.updateTicketStatus(ticket.reference, status, schedule)
       setSelected(updated)
       setToast('Statut mis à jour pour tous les utilisateurs')
     } catch (error) {
@@ -932,6 +941,10 @@ function SyndicTickets({ tickets, setSelected }) {
 }
 
 function SyndicComms({ data, setCompose, onDelete }) {
+  const [delivery, setDelivery] = useState(null)
+  const [deliveryError, setDeliveryError] = useState('')
+  const refreshDelivery = () => api.notificationStatus(data.building.slug).then(value => { setDelivery(value); setDeliveryError('') }).catch(error => setDeliveryError(error.message))
+  useEffect(() => { refreshDelivery() }, [data.building.slug, data.announcements.length])
   return (
     <>
       <div className="content-heading">
@@ -941,6 +954,11 @@ function SyndicComms({ data, setCompose, onDelete }) {
         </div>
         <button className="primary-btn" onClick={() => setCompose(true)}><Plus /> Nouvelle communication</button>
       </div>
+      <section className="card"><div className="card-head"><h3>Notifications par e-mail</h3><button type="button" className="text-btn" onClick={refreshDelivery}>Actualiser</button></div>
+        {deliveryError && <p role="alert">{deliveryError}</p>}
+        {delivery && <><p>{delivery.enabled ? 'Envoi activé · les notifications sont traitées toutes les cinq minutes.' : 'Envoi désactivé dans cet environnement.'}</p>
+          {delivery.notifications.map(item => <p key={item.id}>#{item.id} · {({ pending: 'En attente', sending: 'En cours', sent: 'Accepté par le fournisseur', failed: 'Échec — nouvelle tentative automatique', cancelled: 'Annulé (accès ou contenu retiré)', expired: 'Expiré — vérification nécessaire' })[item.status] || item.status}{item.error ? ` · ${item.error}` : ''}</p>)}</>}
+      </section>
       <div className="communication-list">
         {data.announcements.length === 0
           ? <EmptyState icon={<MessageSquareText />} title="Aucune communication" text="Publiez une première information." />
@@ -994,6 +1012,16 @@ function SyndicAgenda({ events, onAdd, onEdit, onDelete }) {
 }
 
 function SyndicTicketDrawer({ ticket, onClose, changeStatus }) {
+  const [scheduledOn, setScheduledOn] = useState(ticket.scheduledOn || '')
+  const [scheduledTime, setScheduledTime] = useState(ticket.scheduledTime || '')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { setScheduledOn(ticket.scheduledOn || ''); setScheduledTime(ticket.scheduledTime || '') }, [ticket.reference])
+  const update = async status => {
+    if (busy) return
+    setBusy(true)
+    try { await changeStatus(ticket, status, status === 'scheduled' ? { scheduledOn, scheduledTime } : {}) }
+    finally { setBusy(false) }
+  }
   return (
     <Modal onClose={onClose} className="drawer" backdropClass="modal-backdrop drawer-backdrop" labelledBy="drawer-title">
       <div className="drawer-head">
@@ -1013,9 +1041,11 @@ function SyndicTicketDrawer({ ticket, onClose, changeStatus }) {
       </div>
       <div className="drawer-section">
         <span className="overline">Mettre à jour</span>
+        <div className="field-row"><label>Date d’intervention<input type="date" value={scheduledOn} onChange={event => setScheduledOn(event.target.value)} /></label><label>Heure (facultative)<input type="time" value={scheduledTime} onChange={event => setScheduledTime(event.target.value)} /></label></div>
+        <p>Renseignez la date puis choisissez « Planifié » pour l’enregistrer.</p>
         <div className="status-actions">
           {Object.entries(statusMeta).map(([key, m]) => (
-            <button key={key} className={ticket.status === key ? 'selected' : ''} onClick={() => changeStatus(ticket, key)}>
+            <button key={key} className={ticket.status === key ? 'selected' : ''} disabled={busy || (key === 'scheduled' && !scheduledOn)} onClick={() => update(key)}>
               <span className={'status-dot ' + m.cls} />{m.label}{ticket.status === key && <Check />}
             </button>
           ))}
@@ -1234,10 +1264,11 @@ function SyndicFinance({ actions, setToast }) {
               <button className="primary-btn" disabled={busy}><Check /> Enregistrer</button>
             </form>
           </section>
+          {state.data.legacy?.length > 0 && <section className="card"><h3>Anciennes valeurs par compte</h3><p>Valeurs conservées pour rapprochement. Elles ne sont pas additionnées aux montants par lot. Une reprise automatique n’a lieu que lorsque le lot d’origine est sans ambiguïté.</p>{state.data.legacy.map(row => <p key={row.id}>{row.fullName} · {row.unitLabel || 'lot non précisé'} : appel {money(row.quarterlyCall)} · solde {money(row.balance)}</p>)}</section>}
           <section className="card">
-            <div className="card-head"><div><span className="overline">Par membre</span><h3>Appel trimestriel et solde</h3></div></div>
+            <div className="card-head"><div><span className="overline">Par lot et propriétaire</span><h3>Appel trimestriel et solde</h3></div></div>
             {state.data.members.length === 0
-              ? <EmptyState icon={<WalletCards />} title="Aucun membre" text="Invitez d'abord les copropriétaires." />
+              ? <EmptyState icon={<WalletCards />} title="Aucun membre" text="Renseignez d’abord les personnes et leurs relations de propriété." />
               : (
                 <div className="terminal-list">
                   {state.data.members.map(m => <MemberFinanceRow key={m.id} member={m} actions={actions} setToast={setToast} onSaved={apply} />)}
@@ -1251,8 +1282,8 @@ function SyndicFinance({ actions, setToast }) {
 }
 
 function MemberFinanceRow({ member, actions, setToast, onSaved }) {
-  const [quarterlyCall, setQuarterlyCall] = useState(String(member.quarterlyCall))
-  const [balance, setBalance] = useState(String(member.balance))
+  const [quarterlyCall, setQuarterlyCall] = useState(member.quarterlyCall == null ? '' : String(member.quarterlyCall))
+  const [balance, setBalance] = useState(member.balance == null ? '' : String(member.balance))
   const [busy, setBusy] = useState(false)
 
   return (

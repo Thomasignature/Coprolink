@@ -5,6 +5,7 @@ import { LoginView, NoAccessView, SetupView, TerminalEnrollView } from './auth-v
 import { DisplayView, ErrorPanel, Spinner, SyndicView } from './views.jsx'
 import ManagerPortfolioView from './manager-portfolio.jsx'
 import ResidentV2View from './resident-v2.jsx'
+import BuildingManagementView from './building-management.jsx'
 
 /* ------------------------------------------------------------------ *
  * Routage par hash.
@@ -173,9 +174,9 @@ export default function App() {
   const wantsPortfolio = managesBuildings && (route.path === '' || route.path === 'portfolio')
 
   if (!managesBuildings && isBuildingReferent && (route.path === '' || route.path === 'portfolio')) {
-    const referentBuilding = data.memberships.find(m => m.isReferent === true)
-    if (referentBuilding) location.hash = `/portfolio?view=building&building=${encodeURIComponent(referentBuilding.buildingSlug)}`
-    return <Spinner label="Ouverture de la gouvernance de l’immeuble…" />
+    const referentBuilding = data.memberships.find(m => m.isReferent && (!routeBuilding || m.buildingSlug === routeBuilding))
+    if (!referentBuilding) return <ErrorPanel title="Accès refusé" message="Vous n’êtes pas référent de cet immeuble." />
+    return <BuildingManagementView session={data} buildingSlug={referentBuilding.buildingSlug} onLogout={onLogout} />
   }
 
   if (wantsPortfolio) {
@@ -230,8 +231,8 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
       await load()
       return ticket
     },
-    updateTicketStatus: async (reference, status) => {
-      const ticket = await api.updateTicketStatus(slug, reference, status)
+    updateTicketStatus: async (reference, status, schedule = {}) => {
+      const ticket = await api.updateTicketStatus(slug, reference, status, '', schedule)
       await load()
       return ticket
     },

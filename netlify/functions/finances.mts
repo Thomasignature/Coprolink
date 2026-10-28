@@ -1,7 +1,8 @@
 import type { Config } from "@netlify/functions";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, isNull } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { buildingMembers, buildings, users } from "../../db/schema.js";
+import { buildingPeople, buildingUnits, relationFinances, unitPersonRelations } from "../../db/schema-v3.js";
 import { authorize, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import { writeAudit } from "../lib/data.mts";
 
@@ -18,7 +19,7 @@ import { writeAudit } from "../lib/data.mts";
 
 const readAmount = (value: unknown, field: string, { allowNegative = false } = {}) => {
   const amount = typeof value === "string" ? Number(value.replace(",", ".")) : Number(value);
-  if (value === "" || value === null || !Number.isFinite(amount) || Math.abs(amount) > 1_000_000_000) {
+  if (value === undefined || (typeof value === "string" && !value.trim()) || value === null || !Number.isFinite(amount) || Math.abs(amount) > 99_999_999.99) {
     throw new HttpError(422, `Montant « ${field} » invalide`);
   }
   if (!allowNegative && amount < 0) throw new HttpError(422, `Le montant « ${field} » ne peut pas être négatif`);
@@ -28,20 +29,21 @@ const readAmount = (value: unknown, field: string, { allowNegative = false } = {
 const loadFinances = async (buildingId: number) => {
   const [building] = await db.select().from(buildings).where(eq(buildings.id, buildingId)).limit(1);
   if (!building) throw new HttpError(404, "Immeuble introuvable");
-  const members = await db
-    .select({
-      id: buildingMembers.id,
-      email: users.email,
-      fullName: users.fullName,
-      role: buildingMembers.role,
-      unitLabel: buildingMembers.unitLabel,
-      quarterlyCall: buildingMembers.quarterlyCall,
-      balance: buildingMembers.balance,
-    })
-    .from(buildingMembers)
-    .innerJoin(users, eq(buildingMembers.userId, users.id))
-    .where(eq(buildingMembers.buildingId, buildingId))
-    .orderBy(asc(buildingMembers.unitLabel), asc(users.email));
+  const owners = await db.select({
+    id: unitPersonRelations.id, personId: buildingPeople.id, fullName: buildingPeople.fullName,
+    email: buildingPeople.email, unitLabel: buildingUnits.label,
+    quarterlyCall: relationFinances.quarterlyCall, balance: relationFinances.balance,
+  }).from(unitPersonRelations)
+    .innerJoin(buildingUnits, eq(buildingUnits.id, unitPersonRelations.unitId))
+    .innerJoin(buildingPeople, eq(buildingPeople.id, unitPersonRelations.personId))
+    .leftJoin(relationFinances, eq(relationFinances.relationId, unitPersonRelations.id))
+    .where(and(eq(buildingUnits.buildingId, buildingId), eq(buildingPeople.buildingId, buildingId),
+      eq(unitPersonRelations.relationType, "owner"), isNull(unitPersonRelations.endDate)))
+    .orderBy(asc(buildingUnits.label), asc(buildingPeople.fullName));
+  const legacy = await db.select({ id: buildingMembers.id, userId: buildingMembers.userId, fullName: users.fullName,
+    unitLabel: buildingMembers.unitLabel, quarterlyCall: buildingMembers.quarterlyCall, balance: buildingMembers.balance })
+    .from(buildingMembers).innerJoin(users, eq(users.id, buildingMembers.userId))
+    .where(and(eq(buildingMembers.buildingId, buildingId), isNull(buildingMembers.endedAt)));
 
   return {
     building: {
@@ -49,7 +51,8 @@ const loadFinances = async (buildingId: number) => {
       yearlyBudget: Number(building.yearlyBudget),
       yearlySpent: Number(building.yearlySpent),
     },
-    members: members.map((m) => ({ ...m, quarterlyCall: Number(m.quarterlyCall), balance: Number(m.balance) })),
+    members: owners.map(m => ({ ...m, role: "owner", quarterlyCall: m.quarterlyCall === null ? null : Number(m.quarterlyCall), balance: m.balance === null ? null : Number(m.balance) })),
+    legacy: legacy.filter(m => Number(m.balance) !== 0 || Number(m.quarterlyCall) !== 0),
   };
 };
 
@@ -78,21 +81,20 @@ export default async (req: Request) => {
         summary: "Chiffres financiers de l'immeuble mis à jour.",
       });
     } else {
-      const memberId = Number(body.memberId);
-      const scope = and(eq(buildingMembers.id, memberId), eq(buildingMembers.buildingId, ctx.buildingId));
-      const [target] = Number.isInteger(memberId) ? await db.select({ id: buildingMembers.id }).from(buildingMembers).where(scope).limit(1) : [];
-      if (!target) throw new HttpError(404, "Membre introuvable");
-      await db.update(buildingMembers).set({
-        quarterlyCall: readAmount(body.quarterlyCall, "appel trimestriel"),
-        // Un solde négatif représente un crédit en faveur du copropriétaire.
-        balance: readAmount(body.balance, "solde", { allowNegative: true }),
-      }).where(scope);
-      await writeAudit(ctx, {
-        action: "finance.member_updated",
-        entityType: "building_member",
-        entityId: memberId,
-        summary: `Situation financière du membre #${memberId} mise à jour.`,
+      const relationId = Number(body.relationId);
+      if (!Number.isInteger(relationId) || relationId <= 0) throw new HttpError(422, "Choisissez une période de propriété active");
+      await db.transaction(async tx => {
+        await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+        const [target] = await tx.select({ id: unitPersonRelations.id }).from(unitPersonRelations)
+          .innerJoin(buildingUnits, eq(buildingUnits.id, unitPersonRelations.unitId))
+          .where(and(eq(unitPersonRelations.id, relationId), eq(buildingUnits.buildingId, ctx.buildingId),
+            eq(unitPersonRelations.relationType, "owner"), isNull(unitPersonRelations.endDate)));
+        if (!target) throw new HttpError(404, "Période de propriété active introuvable");
+        const amounts = { quarterlyCall: readAmount(body.quarterlyCall, "appel trimestriel"), balance: readAmount(body.balance, "solde", { allowNegative: true }), updatedAt: new Date() };
+        await tx.insert(relationFinances).values({ relationId, ...amounts }).onConflictDoUpdate({ target: relationFinances.relationId, set: amounts });
       });
+      await writeAudit(ctx, { action: "finance.relation_updated", entityType: "unit_person_relation", entityId: relationId,
+        summary: `Situation financière de la période de propriété #${relationId} mise à jour.` });
     }
 
     return Response.json(await loadFinances(ctx.buildingId), { headers: { "cache-control": "no-store" } });

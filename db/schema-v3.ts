@@ -1,5 +1,5 @@
 import {
-  pgTable, serial, text, integer, boolean, timestamp, date, index, uniqueIndex,
+  pgTable, serial, text, integer, boolean, timestamp, date, numeric, index, uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { buildings, users, events } from "./schema.js";
@@ -173,3 +173,11 @@ export const inboundEmails = pgTable("inbound_emails", {
   uniqueIndex("inbound_emails_provider_email_idx").on(t.provider, t.providerEmailId),
   index("inbound_emails_building_received_idx").on(t.buildingId, t.receivedAt),
 ]);
+
+/** Montants personnels par période de propriété, conservés après une vente. */
+export const relationFinances = pgTable("relation_finances", {
+  relationId: integer("relation_id").primaryKey().references(() => unitPersonRelations.id, { onDelete: "restrict" }),
+  quarterlyCall: numeric("quarterly_call", { precision: 10, scale: 2 }),
+  balance: numeric({ precision: 10, scale: 2 }),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});

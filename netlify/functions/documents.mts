@@ -128,7 +128,7 @@ const download = async (req: Request, context: Context) => {
   const ctx = await authorize(req, { buildingSlug: readBuildingSlug(req) });
   const row = await findDocument(ctx.buildingId, readDocumentId(context));
 
-  const allowed = ctx.can("building:read") && mayReadDocument(row.access,
+  const allowed = ctx.can("display:read") ? row.access === "public" : ctx.can("building:read") && mayReadDocument(row.access,
     ctx.can("documents:read:private"), ctx.can("documents:read:owners"));
   if (!allowed) throw new HttpError(404, "Document introuvable");
   if (!row.storageKey) throw new HttpError(404, "Aucun fichier n'est encore associé à ce document");

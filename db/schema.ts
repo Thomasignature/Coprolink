@@ -101,6 +101,8 @@ export const tickets = pgTable("tickets", {
   reporterLabel: text("reporter_label").notNull().default(""),
   reporterUserId: text("reporter_user_id").references(() => users.id, { onDelete: "set null" }),
   reporterTerminalId: integer("reporter_terminal_id"),
+  scheduledOn: date("scheduled_on"),
+  scheduledTime: text("scheduled_time").notNull().default(""),
   nextStep: text("next_step").notNull().default(""),
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),

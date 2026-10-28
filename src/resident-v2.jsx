@@ -6,6 +6,7 @@ import {
 import { Logo } from './views.jsx'
 import { longDate, metaFor } from './format.js'
 import ResidentLotView from './resident-lot.jsx'
+import { residentProfile } from './resident-utils.js'
 import AssemblyPanel from './assembly-panel.jsx'
 import { documentDownloadUrl } from './api.js'
 import { splitEvents, validateReport } from './resident-utils.js'
@@ -29,7 +30,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
   const announcements = Array.isArray(data.announcements) ? data.announcements : []
   const documents = Array.isArray(data.documents) ? data.documents : []
   const professionals = Array.isArray(data.professionals) ? data.professionals : []
-  const residentLabel = previewRole === 'tenant' ? 'Locataire / occupant' : 'Copropriétaire'
+  const { label: residentLabel, owner: isOwner } = residentProfile(data, previewRole)
 
   const openReport = () => {
     if (readOnly) {
@@ -184,7 +185,7 @@ export default function ResidentV2View({ data, session, onReport, onLogout, setT
 
         {section === 'documents' && (
           <div className="rm-content">
-            <div className="rm-page-head"><span>DOCUMENTS</span><h1>Documents utiles</h1><p>{previewRole === 'tenant' ? 'Uniquement les documents autorisés aux occupants.' : 'Les documents de votre copropriété sans devoir rechercher dans vos e-mails.'}</p></div>
+            <div className="rm-page-head"><span>DOCUMENTS</span><h1>Documents utiles</h1><p>{!isOwner ? 'Uniquement les documents autorisés aux occupants.' : 'Les documents de votre copropriété sans devoir rechercher dans vos e-mails.'}</p></div>
             <div className="rm-list">
               {documents.length === 0
                 ? <div className="rm-empty"><FileText /><strong>Aucun document accessible</strong><span>Les documents disponibles pour ce profil apparaîtront ici.</span></div>

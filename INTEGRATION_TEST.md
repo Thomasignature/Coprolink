@@ -34,3 +34,20 @@ Reconstructions historiques remplacées par leurs variantes propres, sans réimp
 7. Invitation et activation, y compris invitation ancienne après clôture ; contrôler les refus d’accès.
 
 L’Inbox intelligente et les parcours encore incomplets du produit ne deviennent pas validés par cette intégration. Ne pas fusionner la PR de preview vers staging/main pour tester ; elle sert uniquement de déclencheur Netlify.
+
+## Révision du 28 octobre 2026
+
+Voir `AUDIT_FIXES.md`. La version corrigée ajoute trois migrations :
+- `20261028120000_owner_period_finances` : montants par période de propriété ;
+- `20261028121000_ticket_schedule` : date et heure d’intervention ;
+- `20261028122000_notification_outbox` : file des notifications métier.
+
+La reprise financière laisse les valeurs ambiguës dans les données historiques,
+sans les affecter automatiquement à un lot. Vérifier le rapprochement dans l’écran
+Finances du syndic. Les notifications métier restent désactivées en preview.
+
+`npm run check` valide désormais aussi de véritables réponses API sur PostgreSQL
+local, la migration financière, l’absence de données financières pour les
+locataires, le multi-lots, le départ partiel/total, la protection du dernier
+syndic, les imports répétés et l’archivage des pièces jointes avec fournisseur simulé.
+Ces contrôles ne remplacent pas la recette connectée indépendante.

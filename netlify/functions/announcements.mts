@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { announcements } from "../../db/schema.js";
 import { authorize, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { enqueueNotification } from "../lib/notifications.mts";
 import { readString, writeAudit } from "../lib/data.mts";
 
 /**
@@ -73,7 +74,8 @@ export default async (req: Request, context: Context) => {
     const priority = body.priority === "important" ? "important" : "normal";
     const isPublic = body.isPublic !== false;
 
-    const [created] = await db
+    const created = await db.transaction(async tx => {
+      const [created] = await tx
       .insert(announcements)
       .values({
         buildingId: ctx.buildingId,
@@ -84,6 +86,10 @@ export default async (req: Request, context: Context) => {
         authorUserId: ctx.principal.kind === "user" ? ctx.principal.userId : null,
       })
       .returning();
+
+      await enqueueNotification(tx, { buildingId: ctx.buildingId, kind: "announcement", entityId: created.id, sourceKey: `announcement-${created.id}` });
+      return created;
+    });
 
     await writeAudit(ctx, {
       action: "announcement.published",

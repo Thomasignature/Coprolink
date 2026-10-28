@@ -3,6 +3,8 @@ import { db } from "../../db/index.js";
 import {
   auditLog, ticketUpdates, tickets, TICKET_STATUSES, type TicketStatus,
 } from "../../db/schema.js";
+import { enqueueNotification } from "./notifications.mts";
+import { isIsoDate, businessDate } from "./lifecycle-policy.mts";
 import { HttpError, type AuthContext } from "./auth.mts";
 
 /** Libellé de suite par défaut, contrôlé côté serveur (jamais fourni par le client). */
@@ -43,8 +45,9 @@ export const readString = (value: unknown, field: string, { max = 500, required 
 export const writeAudit = async (
   ctx: AuthContext,
   entry: { action: string; entityType: string; entityId: string | number; summary: string },
+  executor: Pick<typeof db, "insert"> = db,
 ) => {
-  await db.insert(auditLog).values({
+  await executor.insert(auditLog).values({
     buildingId: ctx.buildingId,
     actorUserId: ctx.principal.kind === "user" ? ctx.principal.userId : null,
     actorLabel: ctx.actorLabel,
@@ -118,39 +121,32 @@ export const changeTicketStatus = async (
   reference: string,
   nextStatus: TicketStatus,
   note: string,
+  schedule: { scheduledOn?: unknown; scheduledTime?: unknown } = {},
 ) => {
-  const [existing] = await db
-    .select()
-    .from(tickets)
-    .where(and(eq(tickets.reference, reference), eq(tickets.buildingId, ctx.buildingId)))
-    .limit(1);
-
-  if (!existing) throw new HttpError(404, "Ticket introuvable");
-
-  const [updated] = await db
-    .update(tickets)
-    .set({ status: nextStatus, nextStep: STATUS_NEXT_STEP[nextStatus], updatedAt: new Date() })
-    .where(eq(tickets.id, existing.id))
-    .returning();
-
-  if (existing.status !== nextStatus) {
-    await db.insert(ticketUpdates).values({
-      ticketId: existing.id,
-      label: STATUS_TIMELINE_LABEL[nextStatus],
-      note,
-      fromStatus: existing.status,
-      toStatus: nextStatus,
-      authorUserId: ctx.principal.kind === "user" ? ctx.principal.userId : null,
-      authorLabel: ctx.actorLabel,
-    });
-
-    await writeAudit(ctx, {
-      action: "ticket.status_changed",
-      entityType: "ticket",
-      entityId: reference,
-      summary: `Le ticket ${reference} est passé de « ${STATUS_LABEL[existing.status as TicketStatus] ?? existing.status} » à « ${STATUS_LABEL[nextStatus]} ».`,
-    });
-  }
+  const updated = await db.transaction(async tx => {
+    const [existing] = await tx.select().from(tickets)
+      .where(and(eq(tickets.reference, reference), eq(tickets.buildingId, ctx.buildingId))).for("update");
+    if (!existing) throw new HttpError(404, "Ticket introuvable");
+    const scheduledOn = schedule.scheduledOn === undefined ? existing.scheduledOn : schedule.scheduledOn;
+    const scheduledTime = schedule.scheduledTime === undefined ? existing.scheduledTime : String(schedule.scheduledTime);
+    if (nextStatus === "scheduled" && (!isIsoDate(scheduledOn) || scheduledOn < businessDate())) throw new HttpError(422, "Renseignez une date d’intervention valide, aujourd’hui ou ultérieure");
+    if (scheduledTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(scheduledTime)) throw new HttpError(422, "Heure d’intervention invalide");
+    const nextStep = nextStatus === "scheduled" ? `Intervention prévue le ${scheduledOn}${scheduledTime ? ` à ${scheduledTime}` : ""}` : STATUS_NEXT_STEP[nextStatus];
+    const changed = existing.status !== nextStatus || (nextStatus === "scheduled" && (existing.scheduledOn !== scheduledOn || existing.scheduledTime !== scheduledTime));
+    const [saved] = await tx.update(tickets).set({ status: nextStatus, nextStep,
+      scheduledOn: nextStatus === "scheduled" ? scheduledOn as string : null,
+      scheduledTime: nextStatus === "scheduled" ? scheduledTime : "", updatedAt: new Date() }).where(eq(tickets.id, existing.id)).returning();
+    if (changed) {
+      const [transition] = await tx.insert(ticketUpdates).values({ ticketId: existing.id,
+        label: nextStatus === "scheduled" ? nextStep : STATUS_TIMELINE_LABEL[nextStatus], note,
+        fromStatus: existing.status, toStatus: nextStatus,
+        authorUserId: ctx.principal.kind === "user" ? ctx.principal.userId : null, authorLabel: ctx.actorLabel }).returning({ id: ticketUpdates.id });
+      await enqueueNotification(tx, { buildingId: ctx.buildingId, kind: "ticket", entityId: existing.id, sourceKey: `ticket-update-${transition.id}`, userId: existing.reporterUserId });
+    }
+    return saved;
+  });
+  await writeAudit(ctx, { action: "ticket.status_changed", entityType: "ticket", entityId: reference,
+    summary: `Le ticket ${reference} : ${STATUS_LABEL[nextStatus]}. ${updated.nextStep}` });
 
   return updated;
 };
@@ -192,6 +188,8 @@ export const serializeTicket = (row: TicketRow, timeline: Timeline = []) => ({
   isPublic: row.isPublic,
   reporterLabel: row.reporterLabel,
   nextStep: row.nextStep,
+  scheduledOn: row.scheduledOn,
+  scheduledTime: row.scheduledTime,
   createdAt: row.createdAt.toISOString(),
   updatedAt: row.updatedAt.toISOString(),
   timeline,
@@ -212,6 +210,8 @@ export const serializePublicTicket = (row: TicketRow, timeline: Timeline = []) =
   priority: row.priority,
   status: row.status,
   nextStep: row.nextStep,
+  scheduledOn: row.scheduledOn,
+  scheduledTime: row.scheduledTime,
   createdAt: row.createdAt.toISOString(),
   timeline: timeline.map((step) => ({ label: step.label, date: step.date })),
 });

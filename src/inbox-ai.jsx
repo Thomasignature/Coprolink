@@ -35,7 +35,8 @@ const parseDate = text => {
     const month = Number(numeric[2])
     let year = numeric[3] ? Number(numeric[3]) : new Date().getFullYear()
     if (year < 100) year += 2000
-    if (day >= 1 && day <= 31 && month >= 1 && month <= 12) return `${year}-${pad(month)}-${pad(day)}`
+    const candidate = `${year}-${pad(month)}-${pad(day)}`
+    if (!Number.isNaN(Date.parse(candidate)) && new Date(candidate).toISOString().slice(0, 10) === candidate) return candidate
   }
   const names = Object.keys(MONTHS).join('|')
   const named = source.match(new RegExp(`\\b(\\d{1,2})(?:er)?\\s+(${names})(?:\\s+(20\\d{2}))?\\b`, 'i'))
@@ -43,7 +44,8 @@ const parseDate = text => {
   const day = Number(named[1])
   const month = MONTHS[lower(named[2])]
   const year = named[3] ? Number(named[3]) : new Date().getFullYear()
-  return `${year}-${pad(month)}-${pad(day)}`
+  const candidate = `${year}-${pad(month)}-${pad(day)}`
+  return !Number.isNaN(Date.parse(candidate)) && new Date(candidate).toISOString().slice(0, 10) === candidate ? candidate : null
 }
 
 const toTime = (hour, minute = '0') => `${pad(Math.min(23, Number(hour)))}:${pad(Math.min(59, Number(minute || 0)))}`
@@ -86,13 +88,7 @@ const analyseMail = mail => {
   const files = (mail.attachments || []).map(item => item.filename || item.name || item.content_disposition || 'Pièce jointe').slice(0, 8)
   const summarySource = body.replace(/\s+/g, ' ')
   const summary = (summarySource.split(/(?<=[.!?])\s+/)[0] || mail.subject || '(Sans objet)').slice(0, 240)
-  let confidence = 72
-  if (classification.key !== 'information') confidence += 8
-  if (eventDate) confidence += 9
-  if (files.length) confidence += 5
-  if (ticketRef) confidence += 6
-  confidence = Math.min(98, confidence)
-  return { body, classification, eventDate, times, ticketRef, files, summary, confidence }
+  return { body, classification, eventDate, times, ticketRef, files, summary }
 }
 
 const formatDate = value => value
@@ -108,6 +104,7 @@ export default function InboxAIView({ session, onLogout }) {
   const [buildingSlug, setBuildingSlug] = useState(initialSlug)
   const [state, setState] = useState({ status: 'loading', emails: [], error: '' })
   const [selectedId, setSelectedId] = useState(null)
+  const [dateOverrides, setDateOverrides] = useState({})
   const [query, setQuery] = useState('')
   const [actionState, setActionState] = useState({ key: '', error: '' })
 
@@ -194,15 +191,15 @@ export default function InboxAIView({ session, onLogout }) {
           <div className="ai-left-column"><section className="ai-card ai-history-card"><div className="ai-card-head ai-history-head"><div><span>INBOX RÉELLE</span><h2>{building.buildingName}</h2></div><div className="ai-history-tools"><label><Search /><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Rechercher…" /></label></div></div>
             {state.status === 'loading' && <div className="ai-empty"><RefreshCw /><strong>Chargement des e-mails…</strong></div>}
             {state.status === 'error' && <div className="ai-empty"><ShieldCheck /><strong>Inbox indisponible</strong><span>{state.error}</span><button className="ai-mini-launch" onClick={load}>Réessayer</button></div>}
-            {state.status !== 'loading' && state.status !== 'error' && <div className="ai-message-list">{filtered.map(mail => <button key={mail.id} className={mail.id === selected?.id ? 'selected' : ''} onClick={() => { setSelectedId(mail.id); setActionState({ key: '', error: '' }) }}><span className="ai-avatar">{(mail.fromName || mail.fromAddress || '?').slice(0, 1).toUpperCase()}</span><span className="ai-message-copy"><strong>{mail.subject || '(Sans objet)'}</strong><small>{mail.fromName || mail.fromAddress} · {mail.analysis.classification.label}</small></span><span className="ai-confidence">{mail.analysis.confidence}%</span><em>{mail.processingStatus === 'content_ready' ? 'contenu lu' : 'en attente'}</em></button>)}{filtered.length === 0 && <div className="ai-empty"><Inbox /><strong>Aucun e-mail reçu</strong><span>Envoie un message à l’adresse de cet immeuble puis clique sur Actualiser.</span></div>}</div>}
+            {state.status !== 'loading' && state.status !== 'error' && <div className="ai-message-list">{filtered.map(mail => <button key={mail.id} className={mail.id === selected?.id ? 'selected' : ''} onClick={() => { setSelectedId(mail.id); setActionState({ key: '', error: '' }) }}><span className="ai-avatar">{(mail.fromName || mail.fromAddress || '?').slice(0, 1).toUpperCase()}</span><span className="ai-message-copy"><strong>{mail.subject || '(Sans objet)'}</strong><small>{mail.fromName || mail.fromAddress} · {mail.analysis.classification.label}</small></span><span className="ai-confidence">À vérifier</span><em>{mail.processingStatus === 'content_ready' ? 'contenu lu' : 'en attente'}</em></button>)}{filtered.length === 0 && <div className="ai-empty"><Inbox /><strong>Aucun e-mail reçu</strong><span>Envoie un message à l’adresse de cet immeuble puis clique sur Actualiser.</span></div>}</div>}
           </section></div>
 
-          <div className="ai-right-column"><section className="ai-card ai-result-card"><div className="ai-card-head"><div><span>INTERPRÉTATION</span><h2>{selected ? 'CoproLink a lu ce mail' : 'En attente d’un e-mail'}</h2></div>{selected && <span className="ai-confidence-large">{selected.analysis.confidence}%</span>}</div>
+          <div className="ai-right-column"><section className="ai-card ai-result-card"><div className="ai-card-head"><div><span>INTERPRÉTATION</span><h2>{selected ? 'CoproLink a lu ce mail' : 'En attente d’un e-mail'}</h2></div>{selected && <span className="ai-confidence-large">Analyse par règles</span>}</div>
             {selected ? <><div className="ai-analysis-summary"><div className="ai-analysis-icon"><Bot /></div><div><span className="ai-type-chip">{selected.analysis.classification.label}</span><h3>{selected.analysis.summary}</h3><p>{selected.fromName || selected.fromAddress}{selected.analysis.eventDate ? ` · ${formatDate(selected.analysis.eventDate)}` : ''}{selected.analysis.ticketRef ? ` · ${selected.analysis.ticketRef}` : ''}</p></div></div>
             <div className="ai-actions-title"><strong>Actions proposées par CoproLink</strong><span>Validation humaine obligatoire.</span></div><div className="ai-action-list">
-              {selected.analysis.eventDate && <article className={`ai-action ${selected.calendarEventId ? 'executed' : 'review'}`}><span className="ai-action-icon"><CalendarDays /></span><div><strong>Ajouter cette intervention au calendrier</strong><p>{formatDate(selected.analysis.eventDate)}{selected.analysis.times.start ? ` · ${selected.analysis.times.start}${selected.analysis.times.end ? `–${selected.analysis.times.end}` : ''}` : ' · heure non précisée'}</p></div><span className={`ai-action-status ${selected.calendarEventId ? 'executed' : 'review'}`}>{selected.calendarEventId ? 'Ajouté' : 'À valider'}</span>{!selected.calendarEventId && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'create_calendar_event')} onClick={() => runAction(selected, 'create_calendar_event', { title: selected.subject || selected.analysis.classification.label, detail: selected.analysis.summary, eventDate: selected.analysis.eventDate, eventTime: selected.analysis.times.start || '' })}><CheckCircle2 /> {busy(selected, 'create_calendar_event') ? 'Ajout…' : 'Valider et ajouter'}</button></div>}</article>}
+              {selected.analysis.eventDate && <article className={`ai-action ${selected.calendarEventId ? 'executed' : 'review'}`}><span className="ai-action-icon"><CalendarDays /></span><div><strong>Ajouter cette intervention au calendrier</strong><label>Date à confirmer<input type="date" value={dateOverrides[selected.id] ?? selected.analysis.eventDate} onChange={event => setDateOverrides(current => ({ ...current, [selected.id]: event.target.value }))} /></label><p>{formatDate(selected.analysis.eventDate)}{selected.analysis.times.start ? ` · ${selected.analysis.times.start}${selected.analysis.times.end ? `–${selected.analysis.times.end}` : ''}` : ' · heure non précisée'}</p></div><span className={`ai-action-status ${selected.calendarEventId ? 'executed' : 'review'}`}>{selected.calendarEventId ? 'Ajouté' : 'À valider'}</span>{!selected.calendarEventId && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'create_calendar_event')} onClick={() => runAction(selected, 'create_calendar_event', { title: selected.subject || selected.analysis.classification.label, detail: selected.analysis.summary, eventDate: dateOverrides[selected.id] ?? selected.analysis.eventDate, eventTime: selected.analysis.times.start || '' })}><CheckCircle2 /> {busy(selected, 'create_calendar_event') ? 'Ajout…' : 'Valider et ajouter'}</button></div>}</article>}
 
-              {selected.analysis.files.length > 0 && <article className={`ai-action ${selected.documentIds?.length ? 'executed' : 'review'}`}><span className="ai-action-icon"><FolderCheck /></span><div><strong>Classer {selected.analysis.files.length} pièce(s) jointe(s)</strong><p>{selected.analysis.files.join(', ')} → {folderFor(`${selected.subject}\n${selected.analysis.body}`)}</p><small>Le fichier binaire n’est pas encore archivé dans CoproLink ; ses métadonnées le seront.</small></div><span className={`ai-action-status ${selected.documentIds?.length ? 'executed' : 'review'}`}>{selected.documentIds?.length ? 'Classé' : 'À valider'}</span>{!selected.documentIds?.length && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'classify_documents')} onClick={() => runAction(selected, 'classify_documents', { files: selected.analysis.files, folder: folderFor(`${selected.subject}\n${selected.analysis.body}`) })}><FolderCheck /> {busy(selected, 'classify_documents') ? 'Classement…' : 'Classer dans Documents'}</button></div>}</article>}
+              {selected.analysis.files.length > 0 && <article className={`ai-action ${selected.documentIds?.length ? 'executed' : 'review'}`}><span className="ai-action-icon"><FolderCheck /></span><div><strong>Classer {selected.analysis.files.length} pièce(s) jointe(s)</strong><p>{selected.analysis.files.join(', ')} → {folderFor(`${selected.subject}\n${selected.analysis.body}`)}</p><small>Les fichiers seront archivés dans Documents (4 Mo maximum par fichier).</small></div><span className={`ai-action-status ${selected.documentIds?.length ? 'executed' : 'review'}`}>{selected.documentIds?.length ? 'Classé' : 'À valider'}</span>{!selected.documentIds?.length && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'classify_documents')} onClick={() => runAction(selected, 'classify_documents', { files: selected.analysis.files, folder: folderFor(`${selected.subject}\n${selected.analysis.body}`) })}><FolderCheck /> {busy(selected, 'classify_documents') ? 'Classement…' : 'Classer dans Documents'}</button></div>}</article>}
 
               {selected.analysis.ticketRef && <article className={`ai-action ${selected.ticketActionStatus === 'created' ? 'executed' : 'review'}`}><span className="ai-action-icon"><TicketCheck /></span><div><strong>Mettre à jour {selected.analysis.ticketRef}</strong><p>{selected.analysis.summary}</p></div><span className={`ai-action-status ${selected.ticketActionStatus === 'created' ? 'executed' : 'review'}`}>{selected.ticketActionStatus === 'created' ? 'Mis à jour' : 'À valider'}</span>{selected.ticketActionStatus !== 'created' && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'update_ticket')} onClick={() => runAction(selected, 'update_ticket', { reference: selected.analysis.ticketRef, note: selected.analysis.body.slice(0, 1000) })}><TicketCheck /> {busy(selected, 'update_ticket') ? 'Mise à jour…' : 'Valider la mise à jour'}</button></div>}</article>}
 

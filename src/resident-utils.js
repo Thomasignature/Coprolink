@@ -26,3 +26,10 @@ export const validateReport = input => {
   if (String(input.description || '').trim().length > 1000) errors.description = 'La description ne peut pas dépasser 1 000 caractères.'
   return errors
 }
+
+export const residentProfile = (data, previewRole = null) => {
+  const owner = previewRole ? previewRole === 'owner' : (data.capabilities || []).includes('resident:owner')
+  return { owner, label: owner ? 'Copropriétaire' : 'Locataire / occupant' }
+}
+
+export const amountIsKnown = value => value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value))

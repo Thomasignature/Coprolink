@@ -1,9 +1,13 @@
 import type { Config } from "@netlify/functions";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { getStore } from "@netlify/blobs";
+import { documentStoreName } from "../lib/document-policy.mts";
+import { enqueueNotification } from "../lib/notifications.mts";
+import { isIsoDate } from "../lib/lifecycle-policy.mts";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { announcements, buildings, documents, events, ticketUpdates, tickets } from "../../db/schema.js";
 import { inboundEmails } from "../../db/schema-v3.js";
-import { authorizeCoproLinkAdmin, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
+import { authorizeCoproLinkAdmin, authorizeSyndicOperator, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import { writeAudit } from "../lib/data.mts";
 import { verifyResendWebhook, WebhookAuthError } from "../lib/resend-webhook.mts";
 
@@ -29,56 +33,6 @@ const parseJsonArray = (value: string | null | undefined) => {
   } catch { return []; }
 };
 
-const ensureInboundEmailTable = async () => {
-  await db.execute(sql`
-    CREATE TABLE IF NOT EXISTS inbound_emails (
-      id serial PRIMARY KEY,
-      building_id integer NOT NULL REFERENCES buildings(id) ON DELETE CASCADE,
-      provider text NOT NULL DEFAULT 'resend',
-      provider_email_id text NOT NULL,
-      message_id text NOT NULL DEFAULT '',
-      from_address text NOT NULL DEFAULT '',
-      from_name text NOT NULL DEFAULT '',
-      to_address text NOT NULL DEFAULT '',
-      subject text NOT NULL DEFAULT '',
-      text_body text NOT NULL DEFAULT '',
-      html_body text NOT NULL DEFAULT '',
-      attachments_json text NOT NULL DEFAULT '[]',
-      raw_event_json text NOT NULL DEFAULT '{}',
-      processing_status text NOT NULL DEFAULT 'received',
-      calendar_action_status text NOT NULL DEFAULT 'pending',
-      calendar_event_id integer REFERENCES events(id) ON DELETE SET NULL,
-      calendar_actioned_at timestamp,
-      document_action_status text NOT NULL DEFAULT 'pending',
-      document_ids_json text NOT NULL DEFAULT '[]',
-      document_actioned_at timestamp,
-      ticket_action_status text NOT NULL DEFAULT 'pending',
-      ticket_reference text NOT NULL DEFAULT '',
-      ticket_actioned_at timestamp,
-      announcement_action_status text NOT NULL DEFAULT 'pending',
-      announcement_id integer,
-      announcement_actioned_at timestamp,
-      received_at timestamp NOT NULL DEFAULT now(),
-      created_at timestamp NOT NULL DEFAULT now()
-    )
-  `);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS calendar_action_status text NOT NULL DEFAULT 'pending'`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS calendar_event_id integer REFERENCES events(id) ON DELETE SET NULL`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS calendar_actioned_at timestamp`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS document_action_status text NOT NULL DEFAULT 'pending'`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS document_ids_json text NOT NULL DEFAULT '[]'`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS document_actioned_at timestamp`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS ticket_action_status text NOT NULL DEFAULT 'pending'`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS ticket_reference text NOT NULL DEFAULT ''`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS ticket_actioned_at timestamp`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS announcement_action_status text NOT NULL DEFAULT 'pending'`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS announcement_id integer`);
-  await db.execute(sql`ALTER TABLE inbound_emails ADD COLUMN IF NOT EXISTS announcement_actioned_at timestamp`);
-  await db.execute(sql`ALTER TABLE documents ADD COLUMN IF NOT EXISTS folder text NOT NULL DEFAULT 'Documents reçus'`);
-  await db.execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS inbound_emails_provider_email_idx ON inbound_emails(provider, provider_email_id)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS inbound_emails_building_received_idx ON inbound_emails(building_id, received_at)`);
-  await db.execute(sql`CREATE INDEX IF NOT EXISTS inbound_emails_calendar_event_idx ON inbound_emails(calendar_event_id)`);
-};
 
 const fetchResendContent = async (emailId: string) => {
   const apiKey = Netlify.env.get("RESEND_API_KEY") || "";
@@ -112,7 +66,6 @@ const hydrateMissingContent = async (rows: any[]) => {
 };
 
 const readInboundList = async (req: Request) => {
-  await ensureInboundEmailTable();
   const ctx = await authorizeCoproLinkAdmin(req, readBuildingSlug(req));
   let rows = await db.select().from(inboundEmails)
     .where(eq(inboundEmails.buildingId, ctx.buildingId))
@@ -143,7 +96,7 @@ const loadMailForAction = async (ctx: any, emailId: number) => {
   return mail || null;
 };
 
-const createCalendarAction = async (ctx: any, mail: any, body: any) => {
+const createCalendarAction = async (ctx: any, mail: any, body: any, tx: Pick<typeof db, "select" | "insert" | "update" | "execute">) => {
   if (mail.calendarEventId) {
     return Response.json({ ok: true, duplicate: true, eventId: mail.calendarEventId, status: "created" });
   }
@@ -152,96 +105,82 @@ const createCalendarAction = async (ctx: any, mail: any, body: any) => {
   const eventTime = String(body.eventTime || "").trim();
   const title = String(body.title || mail.subject || "Événement CoproLink").trim().slice(0, 120);
   const detail = String(body.detail || "Créé après validation depuis l’Inbox CoproLink.").trim().slice(0, 300);
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(eventDate)) return Response.json({ error: "Date attendue au format AAAA-MM-JJ" }, { status: 422 });
+  if (!isIsoDate(eventDate)) return Response.json({ error: "Date attendue au format AAAA-MM-JJ" }, { status: 422 });
   if (eventTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(eventTime)) return Response.json({ error: "Heure attendue au format HH:MM" }, { status: 422 });
 
-  const [created] = await db.insert(events).values({ buildingId: ctx.buildingId, title, detail, eventDate, eventTime, isPublic: true }).returning();
-  await db.update(inboundEmails).set({ calendarActionStatus: "created", calendarEventId: created.id, calendarActionedAt: new Date() }).where(eq(inboundEmails.id, mail.id));
+  const [created] = await tx.insert(events).values({ buildingId: ctx.buildingId, title, detail, eventDate, eventTime, isPublic: body.isPublic === true }).returning();
+  await tx.update(inboundEmails).set({ calendarActionStatus: "created", calendarEventId: created.id, calendarActionedAt: new Date() }).where(eq(inboundEmails.id, mail.id));
   await writeAudit(ctx, {
     action: "inbound_email.calendar_event_created",
     entityType: "event",
     entityId: created.id,
     summary: `Événement « ${title} » créé depuis l’e-mail « ${mail.subject || "Sans objet"} » pour le ${eventDate}.`,
-  });
+  }, tx);
   return Response.json({ ok: true, status: "created", event: created }, { status: 201 });
 };
 
-const createDocumentAction = async (ctx: any, mail: any, body: any) => {
+const createDocumentAction = async (ctx: any, mail: any, body: any, tx: Pick<typeof db, "select" | "insert" | "update" | "execute">) => {
   const existingIds = parseJsonArray(mail.documentIdsJson).map(Number).filter(Number.isInteger);
-  if (existingIds.length > 0) return Response.json({ ok: true, duplicate: true, documentIds: existingIds, status: "created" });
-
-  const attachments = parseJsonArray(mail.attachmentsJson);
-  const requested = Array.isArray(body.files) ? body.files.map((value: unknown) => String(value || "").trim()).filter(Boolean) : [];
-  const names = (requested.length ? requested : attachments.map((item: any) => item?.filename || item?.name || "Pièce jointe"))
-    .filter(Boolean).slice(0, 20);
-  if (!names.length) return Response.json({ error: "Aucune pièce jointe à classer" }, { status: 422 });
-
-  const folder = String(body.folder || "Documents reçus").trim().slice(0, 120) || "Documents reçus";
+  const existing = existingIds.length ? await tx.select().from(documents)
+    .where(and(eq(documents.buildingId, ctx.buildingId), inArray(documents.id, existingIds))) : [];
+  if (existing.length && existing.every(doc => doc.storageKey)) return Response.json({ ok: true, duplicate: true, documentIds: existingIds });
+  const attachments = body._preparedAttachments as { name: string; extension: string; storageKey: string }[];
+  const folder = String(body.folder || "Documents reçus").trim().slice(0, 80);
   const createdIds: number[] = [];
-  for (const name of names) {
-    const extension = name.includes(".") ? name.split(".").pop()!.toUpperCase().slice(0, 12) : "FICHIER";
-    const [created] = await db.insert(documents).values({
-      buildingId: ctx.buildingId,
-      name: name.slice(0, 220),
-      fileType: extension || "FICHIER",
-      folder,
-      access: "private",
-      storageKey: null,
-    }).returning({ id: documents.id });
-    createdIds.push(created.id);
+  for (const file of attachments) {
+    const previous = existing.find(doc => doc.name === file.name);
+    if (previous) {
+      await tx.update(documents).set({ storageKey: file.storageKey, folder, fileType: file.extension.toUpperCase() }).where(eq(documents.id, previous.id));
+      createdIds.push(previous.id);
+    } else {
+      const [created] = await tx.insert(documents).values({ buildingId: ctx.buildingId, name: file.name,
+        fileType: file.extension.toUpperCase(), folder, access: "private", storageKey: file.storageKey }).returning({ id: documents.id });
+      createdIds.push(created.id);
+    }
   }
-
-  await db.update(inboundEmails).set({
-    documentActionStatus: "created",
-    documentIdsJson: JSON.stringify(createdIds),
-    documentActionedAt: new Date(),
-  }).where(eq(inboundEmails.id, mail.id));
-  await writeAudit(ctx, {
-    action: "inbound_email.documents_classified",
-    entityType: "document",
-    entityId: createdIds.join(","),
-    summary: `${createdIds.length} pièce(s) jointe(s) de l’e-mail « ${mail.subject || "Sans objet"} » classée(s) dans « ${folder} » (métadonnées uniquement à ce stade).`,
-  });
+  await tx.update(inboundEmails).set({ documentActionStatus: "created", documentIdsJson: JSON.stringify(createdIds), documentActionedAt: new Date() }).where(eq(inboundEmails.id, mail.id));
+  await writeAudit(ctx, { action: "inbound_email.documents_classified", entityType: "document", entityId: createdIds.join(","),
+    summary: `${createdIds.length} pièce(s) jointe(s) archivées depuis « ${mail.subject || "Sans objet"} ».` }, tx);
   return Response.json({ ok: true, status: "created", documentIds: createdIds, folder }, { status: 201 });
 };
 
-const updateTicketAction = async (ctx: any, mail: any, body: any) => {
+const updateTicketAction = async (ctx: any, mail: any, body: any, tx: Pick<typeof db, "select" | "insert" | "update" | "execute">) => {
   if (mail.ticketActionStatus === "created" && mail.ticketReference) {
     return Response.json({ ok: true, duplicate: true, reference: mail.ticketReference, status: "created" });
   }
   const reference = String(body.reference || "").trim().toUpperCase();
   if (!/^T-\d{4,}$/.test(reference)) return Response.json({ error: "Référence de ticket invalide" }, { status: 422 });
-  const [ticket] = await db.select().from(tickets)
+  const [ticket] = await tx.select().from(tickets)
     .where(and(eq(tickets.reference, reference), eq(tickets.buildingId, ctx.buildingId))).limit(1);
   if (!ticket) return Response.json({ error: `Ticket ${reference} introuvable` }, { status: 404 });
 
   const note = String(body.note || mail.textBody || mail.subject || "Mise à jour reçue par e-mail").trim().slice(0, 1000);
-  await db.insert(ticketUpdates).values({
+  await tx.insert(ticketUpdates).values({
     ticketId: ticket.id,
     label: "Mise à jour reçue par e-mail",
     note,
     authorUserId: ctx.principal.kind === "user" ? ctx.principal.userId : null,
     authorLabel: ctx.actorLabel,
   });
-  await db.update(tickets).set({ updatedAt: new Date() }).where(eq(tickets.id, ticket.id));
-  await db.update(inboundEmails).set({ ticketActionStatus: "created", ticketReference: reference, ticketActionedAt: new Date() }).where(eq(inboundEmails.id, mail.id));
+  await tx.update(tickets).set({ updatedAt: new Date() }).where(eq(tickets.id, ticket.id));
+  await tx.update(inboundEmails).set({ ticketActionStatus: "created", ticketReference: reference, ticketActionedAt: new Date() }).where(eq(inboundEmails.id, mail.id));
   await writeAudit(ctx, {
     action: "inbound_email.ticket_updated",
     entityType: "ticket",
     entityId: reference,
     summary: `Le ticket ${reference} a reçu une mise à jour depuis l’e-mail « ${mail.subject || "Sans objet"} ».`,
-  });
+  }, tx);
   return Response.json({ ok: true, status: "created", reference });
 };
 
-const publishAnnouncementAction = async (ctx: any, mail: any, body: any) => {
+const publishAnnouncementAction = async (ctx: any, mail: any, body: any, tx: Pick<typeof db, "select" | "insert" | "update" | "execute">) => {
   if (mail.announcementId) return Response.json({ ok: true, duplicate: true, announcementId: mail.announcementId, status: "created" });
 
   const title = String(body.title || mail.subject || "Information CoproLink").trim().slice(0, 120);
   const text = String(body.body || mail.textBody || mail.subject || "Information reçue par e-mail").trim().slice(0, 1000);
   if (!text) return Response.json({ error: "Contenu de communication vide" }, { status: 422 });
   const priority = body.priority === "important" ? "important" : "normal";
-  const [created] = await db.insert(announcements).values({
+  const [created] = await tx.insert(announcements).values({
     buildingId: ctx.buildingId,
     title,
     body: text,
@@ -249,32 +188,80 @@ const publishAnnouncementAction = async (ctx: any, mail: any, body: any) => {
     isPublic: body.isPublic === true,
     authorUserId: ctx.principal.kind === "user" ? ctx.principal.userId : null,
   }).returning();
-  await db.update(inboundEmails).set({ announcementActionStatus: "created", announcementId: created.id, announcementActionedAt: new Date() }).where(eq(inboundEmails.id, mail.id));
+  await enqueueNotification(tx as Pick<typeof db, "execute">, { buildingId: ctx.buildingId, kind: "announcement", entityId: created.id, sourceKey: `announcement-${created.id}` });
+  await tx.update(inboundEmails).set({ announcementActionStatus: "created", announcementId: created.id, announcementActionedAt: new Date() }).where(eq(inboundEmails.id, mail.id));
   await writeAudit(ctx, {
     action: "inbound_email.announcement_published",
     entityType: "announcement",
     entityId: created.id,
     summary: `Communication « ${title} » créée depuis l’e-mail « ${mail.subject || "Sans objet"} ».`,
-  });
+  }, tx);
   return Response.json({ ok: true, status: "created", announcement: created }, { status: 201 });
 };
 
+/** Provider URLs are fetched from the authenticated API, never accepted from the request or webhook. */
+const prepareAttachments = async (ctx: any, mail: any, body: any) => {
+  const apiKey = Netlify.env.get("RESEND_API_KEY");
+  if (!apiKey) throw new HttpError(503, "La réception des pièces jointes n’est pas configurée");
+  const signal = AbortSignal.timeout(40_000);
+  const result = await fetch(`https://api.resend.com/emails/receiving/${encodeURIComponent(mail.providerEmailId)}/attachments`, {
+    headers: { Authorization: `Bearer ${apiKey}` }, signal,
+  });
+  if (!result.ok) throw new HttpError(502, "Impossible de lire les pièces jointes chez le fournisseur");
+  const payload: any = await result.json();
+  if (payload.has_more) throw new HttpError(422, "Cet e-mail contient trop de pièces jointes. Déposez-les depuis Documents.");
+  const requested = Array.isArray(body.files) ? body.files.map(String) : [];
+  const files = (payload.data || []).filter((file: any) => !requested.length || requested.includes(file.filename));
+  if (!files.length || files.length > 20) throw new HttpError(422, "Sélection de pièces jointes invalide");
+  const store = getStore({ name: documentStoreName(Netlify.env.get("CONTEXT") || "dev", Netlify.env.get("BRANCH") || ""), consistency: "strong" });
+  const prepared = [];
+  let totalBytes = 0;
+  for (const file of files) {
+    const name = String(file.filename || "").slice(0, 160);
+    const extension = name.split(".").pop()?.toLowerCase() || "";
+    if (!/^(pdf|png|jpg|jpeg|webp|txt|csv|doc|docx|xls|xlsx|odt|ods)$/.test(extension)) throw new HttpError(415, `Format non accepté : ${name}`);
+    if (!Number.isFinite(file.size) || file.size <= 0 || file.size > 4 * 1024 * 1024) throw new HttpError(413, "Chaque pièce jointe doit faire au maximum 4 Mo");
+    const url = new URL(file.download_url);
+    if (url.protocol !== "https:" || url.hostname !== "inbound-cdn.resend.com") throw new HttpError(502, "Adresse de téléchargement du fournisseur invalide");
+    const response = await fetch(url, { redirect: "error", signal });
+    if (!response.ok || !response.body) throw new HttpError(502, "Téléchargement de pièce jointe impossible");
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    while (true) {
+      const part = await reader.read();
+      if (part.done) break;
+      size += part.value.byteLength; totalBytes += part.value.byteLength;
+      if (size > 4 * 1024 * 1024 || totalBytes > 12 * 1024 * 1024) { await reader.cancel(); throw new HttpError(413, "Pièces jointes trop volumineuses (4 Mo par fichier, 12 Mo par opération)"); }
+      chunks.push(part.value);
+    }
+    if (!size) throw new HttpError(422, "Pièce jointe vide");
+    const storageKey = `buildings/${ctx.buildingId}/inbound-${mail.id}-${String(file.id).replace(/[^a-z0-9-]/gi, "")}.${extension}`;
+    await store.set(storageKey, Uint8Array.from(Buffer.concat(chunks)).buffer);
+    prepared.push({ name, extension, storageKey });
+  }
+  return prepared;
+};
+
 const executeInboundAction = async (req: Request) => {
-  await ensureInboundEmailTable();
-  const ctx = await authorizeCoproLinkAdmin(req, readBuildingSlug(req));
+  const ctx = await authorizeSyndicOperator(req, readBuildingSlug(req));
   const body: any = await req.json().catch(() => ({}));
   const emailId = Number(body.emailId);
+  if (!Number.isInteger(emailId) || emailId <= 0) throw new HttpError(422, "E-mail entrant invalide");
   const action = String(body.action || "");
-  if (!Number.isInteger(emailId) || emailId <= 0) return Response.json({ error: "E-mail entrant invalide" }, { status: 422 });
-
-  const mail = await loadMailForAction(ctx, emailId);
-  if (!mail) return Response.json({ error: "E-mail introuvable" }, { status: 404 });
-
-  if (action === "create_calendar_event") return createCalendarAction(ctx, mail, body);
-  if (action === "classify_documents") return createDocumentAction(ctx, mail, body);
-  if (action === "update_ticket") return updateTicketAction(ctx, mail, body);
-  if (action === "publish_announcement") return publishAnnouncementAction(ctx, mail, body);
-  return Response.json({ error: "Action Inbox inconnue" }, { status: 422 });
+  const initial = await loadMailForAction(ctx, emailId);
+  if (!initial) throw new HttpError(404, "E-mail introuvable");
+  // Never trust a client-supplied internal field.
+  body._preparedAttachments = action === "classify_documents" ? await prepareAttachments(ctx, initial, body) : [];
+  return db.transaction(async tx => {
+    const [mail] = await tx.select().from(inboundEmails).where(and(eq(inboundEmails.id, emailId), eq(inboundEmails.buildingId, ctx.buildingId))).for("update");
+    if (!mail) throw new HttpError(404, "E-mail introuvable");
+    if (action === "create_calendar_event") return createCalendarAction(ctx, mail, body, tx);
+    if (action === "classify_documents") return createDocumentAction(ctx, mail, body, tx);
+    if (action === "update_ticket") return updateTicketAction(ctx, mail, body, tx);
+    if (action === "publish_announcement") return publishAnnouncementAction(ctx, mail, body, tx);
+    throw new HttpError(422, "Action Inbox inconnue");
+  });
 };
 
 const receiveResendWebhook = async (req: Request) => {
@@ -287,7 +274,6 @@ const receiveResendWebhook = async (req: Request) => {
     if (error instanceof WebhookAuthError) throw new HttpError(error.status, error.message);
     throw error;
   }
-  await ensureInboundEmailTable();
   if (event?.type !== "email.received") return Response.json({ ok: true, ignored: true });
 
   const data = event?.data || {};
@@ -332,9 +318,9 @@ const receiveResendWebhook = async (req: Request) => {
     rawEventJson: raw.slice(0, 100000),
     processingStatus,
     receivedAt: Number.isNaN(receivedAt.getTime()) ? new Date() : receivedAt,
-  }).returning({ id: inboundEmails.id });
+  }).onConflictDoNothing().returning({ id: inboundEmails.id });
 
-  return Response.json({ ok: true, id: created.id, building: building.slug, processingStatus });
+  return Response.json({ ok: true, id: created?.id, duplicate: !created, building: building.slug, processingStatus });
 };
 
 export default async (req: Request) => {
