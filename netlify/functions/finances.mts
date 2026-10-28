@@ -30,7 +30,7 @@ const loadFinances = async (buildingId: number) => {
   const [building] = await db.select().from(buildings).where(eq(buildings.id, buildingId)).limit(1);
   if (!building) throw new HttpError(404, "Immeuble introuvable");
   const owners = await db.select({
-    id: unitPersonRelations.id, personId: buildingPeople.id, fullName: buildingPeople.fullName,
+    id: unitPersonRelations.id, personId: buildingPeople.id, userId: buildingPeople.userId, fullName: buildingPeople.fullName,
     email: buildingPeople.email, unitLabel: buildingUnits.label,
     quarterlyCall: relationFinances.quarterlyCall, balance: relationFinances.balance,
   }).from(unitPersonRelations)
@@ -51,8 +51,15 @@ const loadFinances = async (buildingId: number) => {
       yearlyBudget: Number(building.yearlyBudget),
       yearlySpent: Number(building.yearlySpent),
     },
-    members: owners.map(m => ({ ...m, role: "owner", quarterlyCall: m.quarterlyCall === null ? null : Number(m.quarterlyCall), balance: m.balance === null ? null : Number(m.balance) })),
-    legacy: legacy.filter(m => Number(m.balance) !== 0 || Number(m.quarterlyCall) !== 0),
+    members: owners.map(({ userId: _userId, ...m }) => ({ ...m, role: "owner", quarterlyCall: m.quarterlyCall === null ? null : Number(m.quarterlyCall), balance: m.balance === null ? null : Number(m.balance) })),
+    // Legacy account-level figures stay visible; each is flagged as matching a
+    // per-lot amount or still to reconcile. Nothing is assigned automatically.
+    legacy: legacy.filter(m => Number(m.balance) !== 0 || Number(m.quarterlyCall) !== 0).map(m => {
+      const match = owners.find(o => o.userId === m.userId && o.unitLabel === m.unitLabel
+        && o.quarterlyCall !== null && Number(o.quarterlyCall) === Number(m.quarterlyCall) && Number(o.balance) === Number(m.balance));
+      return { id: m.id, fullName: m.fullName, unitLabel: m.unitLabel, quarterlyCall: Number(m.quarterlyCall), balance: Number(m.balance),
+        reconciliation: match ? "matched" : "to_review", matchedRelationId: match?.id ?? null };
+    }),
   };
 };
 

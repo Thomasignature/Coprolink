@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { handleAuthCallback, logout, onAuthChange } from '@netlify/identity'
 import { api, ApiError, terminalToken } from './api.js'
-import { LoginView, NoAccessView, SetupView, TerminalEnrollView } from './auth-views.jsx'
+import { LINK_INVALID_MESSAGE, LoginView, NoAccessView, SetupView, TerminalEnrollView } from './auth-views.jsx'
 import { DisplayView, ErrorPanel, Spinner, SyndicView } from './views.jsx'
 import ManagerPortfolioView from './manager-portfolio.jsx'
 import ResidentV2View from './resident-v2.jsx'
@@ -61,7 +61,7 @@ export default function App() {
   const routeBuilding = route.params.get('building')
   const [toast, setToast] = useToast()
 
-  const [authCallback, setAuthCallback] = useState({ done: false, mode: null, inviteToken: null })
+  const [authCallback, setAuthCallback] = useState({ done: false, mode: null, inviteToken: null, linkError: '' })
   const [session, setSession] = useState({ status: 'loading', data: null, error: null })
 
   const loadSession = useCallback(async () => {
@@ -80,15 +80,20 @@ export default function App() {
     ;(async () => {
       let mode = null
       let inviteToken = null
+      let linkError = ''
       try {
         const result = await handleAuthCallback()
         if (result?.type === 'recovery') mode = 'reset'
         if (result?.type === 'invite') { mode = 'invite'; inviteToken = result.token ?? null }
-      } catch (error) {
-        if (!cancelled) setToast(error?.message || 'Ce lien d\'authentification est invalide ou expiré.')
+      } catch {
+        // The library keeps the failing token in the URL: drop it so a reload does
+        // not replay the error, and offer to request a fresh link instead.
+        try { history.replaceState(null, '', location.pathname + location.search) } catch { /* ignore */ }
+        mode = 'forgot'
+        linkError = LINK_INVALID_MESSAGE
       }
       if (cancelled) return
-      setAuthCallback({ done: true, mode, inviteToken })
+      setAuthCallback({ done: true, mode, inviteToken, linkError })
       await loadSession()
     })()
     return () => { cancelled = true }
@@ -136,9 +141,10 @@ export default function App() {
         <LoginView
           mode={authCallback.mode ?? (route.path === 'signup' ? 'signup' : 'login')}
           inviteToken={authCallback.inviteToken}
+          initialError={authCallback.linkError || ''}
           onAuthenticated={async () => {
             const ok = await loadSession()
-            if (ok) setAuthCallback(c => ({ ...c, mode: null, inviteToken: null }))
+            if (ok) setAuthCallback(c => ({ ...c, mode: null, inviteToken: null, linkError: '' }))
             return ok
           }}
         />

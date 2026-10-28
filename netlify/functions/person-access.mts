@@ -10,17 +10,11 @@ import {
   IdentityRateLimitError,
   findAccountByEmail,
   inviteAccount,
-  lookupAccountByEmail,
   sendAccountActivationLink,
   type IdentityAccount,
 } from "../lib/identity.mts";
 import { writeAudit } from "../lib/data.mts";
 import { deliverPersonInvitation } from "../lib/person-invitation.mts";
-
-const findMirroredAccount = async (email: string) => {
-  const [row] = await db.select().from(users).where(sql`lower(${users.email}) = ${email}`).limit(1);
-  return row ?? null;
-};
 
 const mirrorAccount = async (account: IdentityAccount, email: string, fullName: string, executor: Pick<typeof db, "insert"> = db) => {
   await executor.insert(users).values({ id: account.id, email: account.email || email, fullName: account.fullName || fullName })
@@ -78,11 +72,15 @@ export default async (req: Request) => {
     // Reject historical people before calling Identity. Recheck under lock below.
     await activeUnitsForPerson(db, ctx.buildingId, person.id);
 
-    const mirrored = await findMirroredAccount(email);
-    const lookup = mirrored ? { account: null, unavailable: null } : await lookupAccountByEmail(email);
-    const knownAccount: IdentityAccount | null = mirrored
-      ? { id: mirrored.id, email: mirrored.email, fullName: mirrored.fullName, activated: mirrored.lastSeenAt !== null }
-      : lookup.account;
+    // An Identity account maps to one person per building: a shared address
+    // (e.g. a couple) would attach the second person to the first one's account.
+    const [sharing] = await db.select({ fullName: buildingPeople.fullName }).from(buildingPeople)
+      .where(and(eq(buildingPeople.buildingId, ctx.buildingId), sql`lower(${buildingPeople.email}) = ${email}`, sql`${buildingPeople.id} <> ${person.id}`)).limit(1);
+    if (sharing) throw new HttpError(409, `Cette adresse est aussi celle de ${sharing.fullName}. Chaque personne invitée doit avoir sa propre adresse e-mail. Aucun e-mail n’a été demandé.`);
+
+    // Always ask Identity: a local mirror can outlive a deleted account and its
+    // last visit says nothing about whether the Identity account is confirmed.
+    const knownAccount: IdentityAccount | null = await findAccountByEmail(email);
     const { account, invited } = await deliverPersonInvitation(email, person.fullName, knownAccount, {
       invite: inviteAccount, find: findAccountByEmail, resend: sendAccountActivationLink,
       isDuplicate: error => error instanceof IdentityEmailTakenError,
@@ -109,15 +107,17 @@ export default async (req: Request) => {
       summary: invited ? `Invitation CoproLink demandée pour ${email}.` : `Lien d’accès CoproLink demandé pour ${email}.`,
     });
 
+    // Identity only accepted the request: delivery and reception stay unconfirmed.
     return Response.json({
       state: account.activated ? "active" : "pending",
       invited,
-      emailSent: true,
+      emailRequested: true,
+      deliveryConfirmed: false,
       message: invited
-        ? `Invitation CoproLink envoyée à ${email}.`
+        ? `Invitation demandée à Netlify Identity pour ${email}. La réception n’est pas confirmée : demandez à la personne de vérifier aussi ses courriers indésirables.`
         : account.activated
-          ? `Lien de connexion envoyé à ${email}.`
-          : `Nouveau lien d’activation envoyé à ${email}.`,
+          ? `Compte déjà actif : accès rattaché. Un lien de réinitialisation du mot de passe a été demandé pour ${email} ; la personne peut aussi se connecter avec son mot de passe habituel.`
+          : `Compte pas encore activé : nouveau lien d’activation demandé pour ${email}. La réception n’est pas confirmée.`,
     }, { status: 201 });
   } catch (error) {
     if (error instanceof IdentityAdminUnavailableError) {

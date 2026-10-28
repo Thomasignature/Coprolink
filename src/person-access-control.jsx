@@ -30,7 +30,7 @@ export default function PersonAccessControl({ person, access = 'none', onSaveEma
 
   const invite = async () => {
     setBusy(true); setError(''); setNotice('')
-    try { const result = await onInvite(); setNotice(result?.message || 'Demande d’envoi acceptée. Vérifiez aussi les courriers indésirables.') }
+    try { const result = await onInvite(); setNotice(result?.message || 'Demande transmise à Netlify Identity. La réception n’est pas confirmée.') }
     catch (err) { setError(err?.message || 'Impossible d’envoyer l’invitation') }
     finally { setBusy(false) }
   }

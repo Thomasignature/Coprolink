@@ -24,10 +24,14 @@ export function Logo({ compact = false }) {
  */
 function Modal({ onClose, labelledBy, className = 'modal-card', backdropClass = 'modal-backdrop', children }) {
   const panel = useRef(null)
+  // Callers pass a new inline onClose on every render: keep it in a ref so a
+  // parent re-render (toast, refresh) never steals focus from the open dialog.
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
   useEffect(() => {
     const trigger = document.activeElement
     const onKey = e => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') closeRef.current()
       if (e.key !== 'Tab') return
       const nodes = [...(panel.current?.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex="0"]') || [])]
       const first = nodes[0]; const last = nodes.at(-1)
@@ -38,7 +42,7 @@ function Modal({ onClose, labelledBy, className = 'modal-card', backdropClass = 
     addEventListener('keydown', onKey)
     panel.current?.focus()
     return () => { removeEventListener('keydown', onKey); if (trigger?.isConnected) trigger.focus() }
-  }, [onClose])
+  }, [])
 
   return (
     <div className={backdropClass} onMouseDown={e => { if (e.target === e.currentTarget) onClose() }}>
@@ -488,11 +492,14 @@ function ResidentTickets({ tickets, onReport }) {
 function ResidentTicket({ t }) {
   const m = metaFor(t.status)
   // Les étapes atteintes sont déduites de l'historique réellement écrit en base.
+  // `toStatus` is the recorded transition; labels are only a fallback for older rows.
   const reachedLabels = new Set((t.timeline ?? []).map(s => s.label))
+  const reached = new Set((t.timeline ?? []).map(s => s.toStatus).filter(Boolean))
+  const planned = reached.has('scheduled') || t.status === 'scheduled' || reachedLabels.has('Intervention planifiée') || reachedLabels.has('Rendez-vous confirmé')
   const steps = [
     { label: 'Signalé', done: true },
-    { label: 'Pris en charge', done: reachedLabels.has('Pris en charge') || reachedLabels.has('En attente d\'un tiers') || (reachedLabels.has('Intervention planifiée') || reachedLabels.has('Rendez-vous confirmé')) || t.status === 'resolved' },
-    { label: 'Planifié', done: (reachedLabels.has('Intervention planifiée') || reachedLabels.has('Rendez-vous confirmé')) || t.status === 'resolved' },
+    { label: 'Pris en charge', done: reached.has('in_progress') || reached.has('waiting') || reachedLabels.has('Pris en charge') || reachedLabels.has('En attente d\'un tiers') || planned || t.status === 'resolved' },
+    { label: 'Planifié', done: planned || t.status === 'resolved' },
     { label: 'Résolu', done: t.status === 'resolved' },
   ]
 
@@ -750,6 +757,12 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
       </aside>
       <section className="app-content">
         <MobileHeader title="Espace syndic" onExit={onLogout} />
+        {/* Side nav is hidden at ≤900px: keep every section reachable on phones and tablets. */}
+        <nav className="syndic-mobile-nav" aria-label="Sections de l’espace syndic">
+          {[['dashboard', 'Pilotage'], ['tickets', `Demandes${open.length ? ` (${open.length})` : ''}`], ['comms', 'Communications'], ['agenda', 'Agenda'], ['docs', 'Documents'], ['finance', 'Finances'], ['terminals', 'Écrans'], ['members', 'Accès']].map(([key, label]) => (
+            <button key={key} type="button" className={section === key ? 'active' : ''} aria-current={section === key ? 'page' : undefined} onClick={() => setSection(key)}>{label}</button>
+          ))}
+        </nav>
         <div className="content-wrap syndic-wrap">
           {section === 'dashboard' && (
             <SyndicDashboard
@@ -1071,6 +1084,7 @@ function TerminalsPanel({ actions, setToast }) {
   const [label, setLabel] = useState('')
   const [canReport, setCanReport] = useState(true)
   const [issued, setIssued] = useState(null)
+  const [busy, setBusy] = useState(false)
 
   const reload = async () => {
     setState(s => ({ ...s, loading: true }))
@@ -1086,13 +1100,15 @@ function TerminalsPanel({ actions, setToast }) {
 
   const create = async e => {
     e.preventDefault()
-    if (!label.trim()) return
+    if (!label.trim() || busy) return
+    // A second click would issue an untracked active token.
+    setBusy(true)
     try {
       const created = await actions.createTerminal({ label: label.trim(), canReport })
       setIssued(created)
       setLabel('')
       reload()
-    } catch (error) { setToast(error.message) }
+    } catch (error) { setToast(error.message) } finally { setBusy(false) }
   }
 
   return (
@@ -1123,7 +1139,7 @@ function TerminalsPanel({ actions, setToast }) {
             <input type="checkbox" checked={canReport} onChange={e => setCanReport(e.target.checked)} />
             Autoriser les signalements depuis cet écran
           </label>
-          <button className="primary-btn"><Plus /> Créer</button>
+          <button className="primary-btn" disabled={busy}><Plus /> {busy ? "Création…" : "Créer"}</button>
         </form>
       </section>
 
@@ -1182,13 +1198,15 @@ function TerminalsPanel({ actions, setToast }) {
                           Signalements
                         </label>
                         <button
-                          className="danger-btn"
+                          className="danger-btn" disabled={busy}
                           onClick={async () => {
+                            if (busy || !window.confirm(`Révoquer le jeton « ${t.label} » ? L’écran sera déconnecté.`)) return
+                            setBusy(true)
                             try {
                               await actions.revokeTerminal(t.id)
                               setToast('Jeton révoqué')
                               reload()
-                            } catch (error) { setToast(error.message) }
+                            } catch (error) { setToast(error.message) } finally { setBusy(false) }
                           }}
                         ><Trash2 size={16} /> Révoquer</button>
                       </>
@@ -1264,14 +1282,14 @@ function SyndicFinance({ actions, setToast }) {
               <button className="primary-btn" disabled={busy}><Check /> Enregistrer</button>
             </form>
           </section>
-          {state.data.legacy?.length > 0 && <section className="card"><h3>Anciennes valeurs par compte</h3><p>Valeurs conservées pour rapprochement. Elles ne sont pas additionnées aux montants par lot. Une reprise automatique n’a lieu que lorsque le lot d’origine est sans ambiguïté.</p>{state.data.legacy.map(row => <p key={row.id}>{row.fullName} · {row.unitLabel || 'lot non précisé'} : appel {money(row.quarterlyCall)} · solde {money(row.balance)}</p>)}</section>}
+          {state.data.legacy?.length > 0 && <section className="card"><h3>Anciennes valeurs par compte</h3><p>Valeurs conservées pour rapprochement. Elles ne sont pas additionnées aux montants par lot. Une reprise automatique n’a lieu que lorsque le lot d’origine est sans ambiguïté.</p>{state.data.legacy.map(row => <p key={row.id}>{row.fullName} · {row.unitLabel || 'lot non précisé'} : appel {money(row.quarterlyCall)} · solde {money(row.balance)} · <strong>{row.reconciliation === 'matched' ? 'identique au montant du lot' : 'à rapprocher'}</strong></p>)}</section>}
           <section className="card">
             <div className="card-head"><div><span className="overline">Par lot et propriétaire</span><h3>Appel trimestriel et solde</h3></div></div>
             {state.data.members.length === 0
               ? <EmptyState icon={<WalletCards />} title="Aucun membre" text="Renseignez d’abord les personnes et leurs relations de propriété." />
               : (
                 <div className="terminal-list">
-                  {state.data.members.map(m => <MemberFinanceRow key={m.id} member={m} actions={actions} setToast={setToast} onSaved={apply} />)}
+                  {state.data.members.map(m => <MemberFinanceRow key={m.id} member={m} actions={actions} setToast={setToast} onSaved={data => setState({ loading: false, error: null, data })} />)}
                 </div>
               )}
           </section>
@@ -1326,6 +1344,13 @@ function MembersPanel({ actions, setToast }) {
   const [role, setRole] = useState('resident')
   const [unitLabel, setUnitLabel] = useState('')
   const [busy, setBusy] = useState(false)
+  // One row action at a time: a double click must not send two Identity e-mails.
+  const [rowBusy, setRowBusy] = useState(null)
+  const runRow = async (key, action) => {
+    if (rowBusy) return
+    setRowBusy(key)
+    try { await action() } finally { setRowBusy(null) }
+  }
 
   const reload = async () => {
     setState(s => ({ ...s, loading: true }))
@@ -1436,24 +1461,24 @@ function MembersPanel({ actions, setToast }) {
                   <small>{p.email} · {roleLabel(p.role)}{p.unitLabel ? ` · ${p.unitLabel}` : ''} · en attente d'activation</small>
                 </div>
                 <button
-                  className="ghost-btn"
-                  onClick={async () => {
+                  className="ghost-btn" disabled={rowBusy !== null}
+                  onClick={() => runRow(`pending-${p.id}`, async () => {
                     try {
                       const result = await actions.retryPendingInvite(p.id)
-                      setToast(result?.message || 'Invitation relancée')
+                      setToast(result?.message || 'Relance transmise à Netlify Identity (réception non confirmée)')
                     } catch (error) { setToast(error.message) }
                     reload()
-                  }}
+                  })}
                 ><Mail size={16} /> Relancer l'invitation</button>
                 <button
-                  className="danger-btn"
-                  onClick={async () => {
+                  className="danger-btn" disabled={rowBusy !== null}
+                  onClick={() => window.confirm(`Annuler l’invitation de ${p.email} ?`) && runRow(`cancel-${p.id}`, async () => {
                     try {
                       await actions.cancelPendingInvite(p.id)
                       setToast('Invitation annulée')
                     } catch (error) { setToast(error.message) }
                     reload()
-                  }}
+                  })}
                 ><Trash2 size={16} /> Annuler</button>
               </div>
             ))}
@@ -1481,40 +1506,40 @@ function MembersPanel({ actions, setToast }) {
                     </div>
                     {m.activated === false && (
                       <button
-                        className="ghost-btn"
-                        onClick={async () => {
+                        className="ghost-btn" disabled={rowBusy !== null}
+                        onClick={() => runRow(`resend-${m.id}`, async () => {
                           try {
                             const result = await actions.resendMemberInvite(m.id)
-                            setToast(result?.message || 'Invitation renvoyée')
+                            setToast(result?.message || 'Demande de renvoi transmise à Netlify Identity (réception non confirmée)')
                           } catch (error) { setToast(error.message) }
                           reload()
-                        }}
+                        })}
                       ><Mail size={16} /> Renvoyer</button>
                     )}
                     <select
                       value={m.role}
-                      aria-label={`Rôle de ${m.email}`}
-                      onChange={async e => {
+                      aria-label={`Rôle de ${m.email}`} disabled={rowBusy !== null}
+                      onChange={e => { const next = e.target.value; runRow(`role-${m.id}`, async () => {
                         try {
-                          await actions.updateMember(m.id, { role: e.target.value })
+                          await actions.updateMember(m.id, { role: next })
                           setToast('Rôle mis à jour')
                           reload()
                         } catch (error) { setToast(error.message); reload() }
-                      }}
+                      }) }}
                     >
                       {(state.roles.length ? state.roles : ['resident', 'council_member', 'manager']).map(r => (
                         <option key={r} value={r}>{roleLabel(r)}</option>
                       ))}
                     </select>
                     <button
-                      className="danger-btn"
-                      onClick={async () => {
+                      className="danger-btn" disabled={rowBusy !== null}
+                      onClick={() => window.confirm(`Retirer l’accès de ${m.fullName || m.email} ? L’historique est conservé.`) && runRow(`remove-${m.id}`, async () => {
                         try {
                           await actions.removeMember(m.id)
                           setToast('Accès retiré')
                           reload()
                         } catch (error) { setToast(error.message) }
-                      }}
+                      })}
                     ><Trash2 size={16} /> Retirer</button>
                   </div>
                 ))}

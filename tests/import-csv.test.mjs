@@ -28,7 +28,9 @@ test('a person without email is reused on repeated import of the same active uni
   const person = { id: 1, fullName: 'Alice  Dupont', email: '' };
   assert.equal(matchImportPerson([person, person], ' alice dupont '), person);
   assert.equal(matchImportPerson([person], 'Bob'), null);
-  assert.equal(matchImportPerson([{ ...person, email: 'alice@example.invalid' }], 'Alice Dupont'), null);
+  assert.equal(matchImportPerson([{ ...person, email: 'alice@example.invalid' }], 'Alice Dupont', { withoutEmailOnly: true }), null);
+  // A later file without e-mails still finds the person completed earlier.
+  assert.equal(matchImportPerson([{ ...person, email: 'alice@example.invalid' }], 'Alice Dupont').id, 1);
 });
 
 test('existing duplicate people are reported for manual review rather than guessed', () => {
@@ -36,4 +38,9 @@ test('existing duplicate people are reported for manual review rather than guess
     { id: 1, fullName: 'Alice', email: '' },
     { id: 2, fullName: 'alice', email: '' },
   ], 'Alice'), /Plusieurs personnes/);
+});
+
+test('roles without accents are recognised', () => {
+  const rows = parseCsv('1;0;Alice;;Coproprietaire;\n2;0;Bob;;proprietaire  occupant;');
+  assert.deepEqual(rows.map(r => r.relationPreset), ['owner', 'owner_occupant']);
 });

@@ -128,10 +128,10 @@ export const changeTicketStatus = async (
       .where(and(eq(tickets.reference, reference), eq(tickets.buildingId, ctx.buildingId))).for("update");
     if (!existing) throw new HttpError(404, "Ticket introuvable");
     const scheduledOn = schedule.scheduledOn === undefined ? existing.scheduledOn : schedule.scheduledOn;
-    const scheduledTime = schedule.scheduledTime === undefined ? existing.scheduledTime : String(schedule.scheduledTime);
+    const scheduledTime = schedule.scheduledTime === undefined ? existing.scheduledTime : schedule.scheduledTime === null ? "" : String(schedule.scheduledTime);
     if (nextStatus === "scheduled" && (!isIsoDate(scheduledOn) || scheduledOn < businessDate())) throw new HttpError(422, "Renseignez une date d’intervention valide, aujourd’hui ou ultérieure");
     if (scheduledTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(scheduledTime)) throw new HttpError(422, "Heure d’intervention invalide");
-    const nextStep = nextStatus === "scheduled" ? `Intervention prévue le ${scheduledOn}${scheduledTime ? ` à ${scheduledTime}` : ""}` : STATUS_NEXT_STEP[nextStatus];
+    const nextStep = nextStatus === "scheduled" ? `Intervention prévue le ${String(scheduledOn).split("-").reverse().join("/")}${scheduledTime ? ` à ${scheduledTime}` : ""}` : STATUS_NEXT_STEP[nextStatus];
     const changed = existing.status !== nextStatus || (nextStatus === "scheduled" && (existing.scheduledOn !== scheduledOn || existing.scheduledTime !== scheduledTime));
     const [saved] = await tx.update(tickets).set({ status: nextStatus, nextStep,
       scheduledOn: nextStatus === "scheduled" ? scheduledOn as string : null,
@@ -152,7 +152,7 @@ export const changeTicketStatus = async (
 };
 
 export const loadTicketTimeline = async (ticketIds: number[]) => {
-  if (ticketIds.length === 0) return new Map<number, { label: string; date: string; note: string }[]>();
+  if (ticketIds.length === 0) return new Map<number, Timeline>();
 
   const rows = await db
     .select()
@@ -160,13 +160,15 @@ export const loadTicketTimeline = async (ticketIds: number[]) => {
     .where(inArray(ticketUpdates.ticketId, ticketIds))
     .orderBy(asc(ticketUpdates.createdAt));
 
-  const grouped = new Map<number, { label: string; date: string; note: string }[]>();
+  const grouped = new Map<number, Timeline>();
   for (const row of rows) {
     const list = grouped.get(row.ticketId) ?? [];
     list.push({
       label: row.label,
       date: row.createdAt.toISOString(),
       note: row.note,
+      // Screens derive progress from the recorded transition, not from label wording.
+      toStatus: row.toStatus,
     });
     grouped.set(row.ticketId, list);
   }
@@ -174,7 +176,7 @@ export const loadTicketTimeline = async (ticketIds: number[]) => {
 };
 
 type TicketRow = typeof tickets.$inferSelect;
-type Timeline = { label: string; date: string; note: string }[];
+type Timeline = { label: string; date: string; note: string; toStatus: string | null }[];
 
 /** Vue complète d'un ticket. Réservée aux porteurs authentifiés autorisés. */
 export const serializeTicket = (row: TicketRow, timeline: Timeline = []) => ({
@@ -213,7 +215,7 @@ export const serializePublicTicket = (row: TicketRow, timeline: Timeline = []) =
   scheduledOn: row.scheduledOn,
   scheduledTime: row.scheduledTime,
   createdAt: row.createdAt.toISOString(),
-  timeline: timeline.map((step) => ({ label: step.label, date: step.date })),
+  timeline: timeline.map((step) => ({ label: step.label, date: step.date, toStatus: step.toStatus })),
 });
 
 export const listBuildingTickets = async (buildingId: number, options: { onlyPublic?: boolean } = {}) => {

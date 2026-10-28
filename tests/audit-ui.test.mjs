@@ -23,3 +23,14 @@ test('real resident screens: tenant has no owner finance block; owner can select
   assert.match(owner,/<strong>0,00[\s\u00a0]*€<\/strong>/)
   assert.doesNotMatch(owner,/Non renseigné/)
 })
+
+test('expired or used Identity links get an actionable French message, network failures too', async () => {
+  const outfile = resolve('.netlify/audit-tests/auth-views.mjs')
+  await build({ entryPoints: ['src/auth-views.jsx'], outfile, bundle: true, format: 'esm', platform: 'node', packages: 'external',
+    plugins: [{ name:'ignore-style-only', setup(b) { b.onLoad({filter:/\.css$/},()=>({contents:'',loader:'js'})) } }], logLevel:'silent' })
+  const { messageFor, LINK_INVALID_MESSAGE } = await import(outfile)
+  for (const message of ['User not found', 'Invalid token', 'Token expired']) assert.equal(messageFor(new Error(message), 'invite'), LINK_INVALID_MESSAGE)
+  assert.equal(messageFor(new Error('Invalid token'), 'reset'), LINK_INVALID_MESSAGE)
+  assert.equal(messageFor(new Error('invalid_grant'), 'login'), 'E-mail ou mot de passe incorrect.')
+  assert.match(messageFor(new TypeError('Failed to fetch'), 'login'), /Connexion impossible/)
+})

@@ -142,6 +142,12 @@ export default async (req: Request) => {
         if (body.startDate && (!isIsoDate(body.startDate) || body.startDate > businessDate())) throw new HttpError(422, "Date de début invalide ou future");
         const [created] = await db.transaction(async tx => {
           await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+          // A return is a new period: never a second active copy, never overlapping the closed one.
+          const periods = await tx.select({ endDate: unitPersonRelations.endDate }).from(unitPersonRelations)
+            .where(and(eq(unitPersonRelations.unitId, unitId), eq(unitPersonRelations.personId, personId), eq(unitPersonRelations.relationType, relationType)));
+          if (periods.some(period => !period.endDate)) throw new HttpError(409, "Cette relation est déjà active pour ce lot");
+          const lastEnd = periods.map(period => period.endDate as string).sort().at(-1);
+          if (lastEnd && body.startDate && body.startDate < lastEnd) throw new HttpError(422, "La nouvelle période ne peut pas commencer avant la fin de la précédente");
           return tx.insert(unitPersonRelations).values({
           unitId,
           personId,

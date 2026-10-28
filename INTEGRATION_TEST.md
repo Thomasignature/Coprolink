@@ -51,3 +51,18 @@ local, la migration financière, l’absence de données financières pour les
 locataires, le multi-lots, le départ partiel/total, la protection du dernier
 syndic, les imports répétés et l’archivage des pièces jointes avec fournisseur simulé.
 Ces contrôles ne remplacent pas la recette connectée indépendante.
+
+## Consolidation de la preview #23
+
+Les corrections fonctionnelles du commit `4a7d2f5` de la preview #23 sont reprises
+sur la branche d’intégration. Sa migration de recalage de snapshot, déjà appliquée
+sur la base #23, reste immuable sur cette branche et cette base.
+
+La base #18 a déjà appliqué des migrations postérieures à ce recalage. Une nouvelle
+migration propre à son historique, `20261028130000_align_core_snapshot`, reprend
+le même SQL idempotent et le même snapshot. Aucun fichier déjà appliqué à la base
+#18 n’est modifié ou retiré. Les corrections métier sont identiques à #23.
+
+Les contrôles locaux et les tests simulant Identity ne prouvent pas la réception
+d’une invitation dans une véritable boîte : celle-ci requiert un compte de test
+contrôlé et une vérification de la boîte correspondante.

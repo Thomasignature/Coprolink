@@ -121,6 +121,7 @@ rafraîchit chaque minute.
 | --- | --- |
 | `NETLIFY_DATABASE_URL` | Fournie automatiquement par Netlify Database |
 | `COPROLINK_SETUP_TOKEN` | Optionnelle. Si définie, exigée dans l'en-tête `x-setup-token` pour créer un immeuble |
+| `COPROLINK_INBOUND_DOMAIN` | Recommandée avec l’Inbox. Domaine de réception (ex. `in.exemple.be`) : seuls les destinataires To/Cc de ce domaine servent au routage vers une copropriété |
 
 ## API
 
@@ -206,8 +207,11 @@ Les tests d’intégration utilisent une base PostgreSQL locale PGlite et les
 véritables fonctions, avec Identity et les appels externes remplacés par des
 fixtures. Aucune base distante ni aucun e-mail réel ne sont utilisés.
 
-Restent à valider en preview : réception réelle des invitations, parcours avec
-sessions indépendantes, terminal et dimensions mobiles, puis changement de syndic.
+Les sessions syndic, propriétaire, locataire, référent non syndic et terminal, le
+changement de syndic, les retours de personnes, l’Inbox et les notifications sont
+couverts par ces tests locaux (voir la seconde partie de `AUDIT_FIXES.md`).
+Restent à valider avec de vrais comptes : réception et clic des liens Identity,
+sessions réelles dans un navigateur, terminal et rendu 375/768 px.
 Les textes de confidentialité/conservation, responsabilités et procédures de
 sauvegarde/restauration doivent être finalisés avant un pilote. Les votes/PV d’AG
 et le portail prestataire restent des fonctionnalités complémentaires à cadrer.

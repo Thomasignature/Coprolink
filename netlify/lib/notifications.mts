@@ -2,6 +2,13 @@ import { sql } from "drizzle-orm";
 import { db } from "../../db/index.js";
 import { notificationSendingEnabled } from "./notification-policy.mts";
 
+// Same rule as authorization: a resident linked to a V3 person needs an active
+// relation in this building; legacy accounts without a person keep their membership.
+const hasCurrentAccess = sql`(m.role NOT IN ('resident','council_member')
+  OR NOT EXISTS (SELECT 1 FROM building_people p WHERE p.user_id=m.user_id AND p.building_id=m.building_id)
+  OR EXISTS (SELECT 1 FROM building_people p JOIN unit_person_relations r ON r.person_id=p.id JOIN building_units un ON un.id=r.unit_id
+    WHERE p.user_id=m.user_id AND p.building_id=m.building_id AND un.building_id=m.building_id AND r.end_date IS NULL))`;
+
 /** Called in the same transaction as the business event. One row per recipient. */
 export const enqueueNotification = async (tx: Pick<typeof db, "execute">, input: {
   buildingId: number; kind: "announcement" | "ticket"; entityId: number; sourceKey: string; userId?: string | null;
@@ -10,7 +17,7 @@ export const enqueueNotification = async (tx: Pick<typeof db, "execute">, input:
   if (!notificationSendingEnabled(Netlify.env)) return;
   await tx.execute(sql`INSERT INTO notification_outbox (building_id,user_id,kind,entity_id,source_key)
     SELECT m.building_id,m.user_id,${input.kind},${input.entityId},${input.sourceKey}
-    FROM building_members m WHERE m.building_id=${input.buildingId} AND m.ended_at IS NULL
+    FROM building_members m WHERE m.building_id=${input.buildingId} AND m.ended_at IS NULL AND ${hasCurrentAccess}
       AND (${input.kind}='announcement' OR m.user_id=${input.userId ?? ""})
     ON CONFLICT (source_key,user_id) DO NOTHING`);
 };
@@ -33,7 +40,7 @@ export const deliverNotifications = async () => {
     try {
       // Resolve access and current recipient again. Revocation cancels queued mail.
       const allowed = await db.execute(sql`SELECT u.email FROM users u JOIN building_members m ON m.user_id=u.id
-        WHERE u.id=${row.user_id} AND m.building_id=${row.building_id} AND m.ended_at IS NULL`);
+        WHERE u.id=${row.user_id} AND m.building_id=${row.building_id} AND m.ended_at IS NULL AND ${hasCurrentAccess}`);
       const email = allowed.rows[0]?.email as string | undefined;
       const source = row.kind === "ticket"
         ? await db.execute(sql`SELECT reference FROM tickets WHERE id=${row.entity_id} AND building_id=${row.building_id} AND reporter_user_id=${row.user_id}`)

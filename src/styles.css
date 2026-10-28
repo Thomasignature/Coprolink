@@ -23,3 +23,5 @@
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 
 .item-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.syndic-mobile-nav{display:none}
+@media(max-width:900px){.syndic-mobile-nav{display:flex;gap:6px;overflow-x:auto;padding:10px 14px;position:sticky;top:62px;z-index:29;background:rgba(249,247,242,.96);border-bottom:1px solid var(--line);scrollbar-width:thin}.syndic-mobile-nav button{flex:0 0 auto;border:1px solid var(--line);background:#fffdfa;border-radius:999px;padding:9px 13px;min-height:40px;font-size:13px;color:#59645f;white-space:nowrap}.syndic-mobile-nav button.active{background:var(--ink);border-color:var(--ink);color:#fff;font-weight:700}}

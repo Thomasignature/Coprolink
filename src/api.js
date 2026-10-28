@@ -19,6 +19,8 @@ export const terminalToken = {
   },
 }
 
+export const NETWORK_ERROR = 'Connexion impossible. Vérifiez votre réseau et réessayez.'
+
 export class ApiError extends Error {
   constructor(status, message) {
     super(message)
@@ -41,12 +43,17 @@ async function request(path, { method = 'GET', body, terminal = false, extraHead
     headers['x-terminal-token'] = token
   }
 
-  const response = await fetch(path, {
-    method,
-    headers,
-    credentials: 'same-origin',
-    body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
-  })
+  let response
+  try {
+    response = await fetch(path, {
+      method,
+      headers,
+      credentials: 'same-origin',
+      body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
+    })
+  } catch {
+    throw new ApiError(0, NETWORK_ERROR)
+  }
 
   if (response.status === 204) return null
 
@@ -54,6 +61,8 @@ async function request(path, { method = 'GET', body, terminal = false, extraHead
   if (!response.ok) {
     throw new ApiError(response.status, payload?.error || `Erreur ${response.status}`)
   }
+  // The SPA fallback answers unknown routes with index.html (200): never treat it as data.
+  if (!(response.headers.get('content-type') || '').includes('json')) throw new ApiError(502, 'Réponse inattendue du serveur. Réessayez.')
   return payload
 }
 

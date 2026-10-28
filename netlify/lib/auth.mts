@@ -95,19 +95,26 @@ const readTerminalToken = (req: Request) => {
 export const linkBuildingPersonAccount = async (buildingId: number, email: string, userId: string) => {
   const needle = email.trim().toLowerCase();
   if (!needle) return;
-  await db.update(buildingPeople)
-    .set({ userId, updatedAt: new Date() })
-    .where(and(
-      eq(buildingPeople.buildingId, buildingId),
-      sql`lower(${buildingPeople.email}) = ${needle}`,
-    ));
+  // One account per person per building (unique index): if several unlinked
+  // people share this address, link a single one and leave the rest to the syndic.
+  const [alreadyLinked] = await db.select({ id: buildingPeople.id }).from(buildingPeople)
+    .where(and(eq(buildingPeople.buildingId, buildingId), eq(buildingPeople.userId, userId))).limit(1);
+  if (alreadyLinked) return;
+  const [candidate] = await db.select({ id: buildingPeople.id }).from(buildingPeople)
+    .where(and(eq(buildingPeople.buildingId, buildingId), isNull(buildingPeople.userId), sql`lower(${buildingPeople.email}) = ${needle}`))
+    .orderBy(buildingPeople.id).limit(1);
+  if (!candidate) return;
+  await db.update(buildingPeople).set({ userId, updatedAt: new Date() })
+    .where(and(eq(buildingPeople.id, candidate.id), isNull(buildingPeople.userId)))
+    .catch((error) => console.error("Rattachement de la personne impossible:", error));
 };
 
 const claimPendingMemberships = async (userId: string, email: string) => {
   const needle = email.trim().toLowerCase();
   if (!needle) return;
 
-  const pending = await db.select().from(pendingMembers).where(eq(pendingMembers.email, needle));
+  // Older rows may predate lowercasing: compare case-insensitively.
+  const pending = await db.select().from(pendingMembers).where(sql`lower(${pendingMembers.email}) = ${needle}`);
   if (pending.length === 0) return;
 
   for (const row of pending) {

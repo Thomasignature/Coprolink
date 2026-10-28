@@ -57,8 +57,11 @@ export function parseCsv(text) {
   return rows.map(({ cells, sourceRow }) => {
     if (cells.length < 5 || cells.length > 6) throw new Error(`Ligne ${sourceRow} : 5 ou 6 colonnes attendues.`)
     const [unitLabel, floor, fullName, email, role, shareLabel = ''] = cells
-    const roleKey = role.toLowerCase()
-    const relationPreset = Object.hasOwn(roles, roleKey) ? roles[roleKey] : null
+    // Exports often drop accents or vary spacing ("Coproprietaire  occupant").
+    const roleKey = role.toLowerCase().replace(/\s+/g, ' ').trim()
+    const plainKey = roleKey.normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    const plainRoles = Object.fromEntries(Object.entries(roles).map(([key, value]) => [key.normalize('NFD').replace(/[\u0300-\u036f]/g, ''), value]))
+    const relationPreset = Object.hasOwn(roles, roleKey) ? roles[roleKey] : Object.hasOwn(plainRoles, plainKey) ? plainRoles[plainKey] : null
     if (!unitLabel || !fullName) throw new Error(`Ligne ${sourceRow} : lot et nom obligatoires.`)
     if (!relationPreset) throw new Error(`Ligne ${sourceRow} : rôle « ${role} » non reconnu.`)
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error(`Ligne ${sourceRow} : e-mail invalide.`)

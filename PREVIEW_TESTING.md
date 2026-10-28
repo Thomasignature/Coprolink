@@ -31,3 +31,18 @@ doit suivre `buildings/<buildingId>/<identifiant>` ; l'API refuse une clé appar
 5. Ouvrir « Mon lot », actualiser, utiliser précédent/suivant, puis se déconnecter.
 6. Refaire avec le second compte et vérifier l'absence de données privées du premier.
 7. Refaire au clavier, à 375 px (mobile) et 768 px (tablette).
+
+## Recette restante avec comptes réels (mise à jour du 28 octobre 2026)
+
+À faire sur une preview dont la base est confirmée isolée, avec des boîtes de test
+contrôlées uniquement :
+
+1. Inviter une personne nouvelle, avec une adresse contenant des majuscules ;
+   vérifier la réception, l’activation et le rattachement au bon lot.
+2. Relancer un compte non activé, ouvrir un lien expiré puis un lien déjà utilisé :
+   le message doit proposer « Recevoir un nouveau lien ».
+3. Révoquer une personne pendant que sa session est ouverte : l’appel suivant doit
+   être refusé et la session afficher l’absence d’accès.
+4. Référent non syndic : lecture de la gouvernance, aucune écriture possible.
+5. Terminal : aucun document privé ou réservé aux propriétaires.
+6. Navigation syndic et écrans portefeuille/immeuble/Inbox à 375 et 768 px.

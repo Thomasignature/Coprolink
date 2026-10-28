@@ -144,7 +144,7 @@ const download = async (req: Request, context: Context) => {
   return new Response(data, {
     headers: {
       "content-type": MIME_BY_EXTENSION[extension] ?? "application/octet-stream",
-      "content-disposition": `${disposition}; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+      "content-disposition": `${disposition}; filename="${fileName.replace(/[^\x20-\x7e]|["\\]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(fileName).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`)}`,
       "cache-control": "private, no-store",
       "x-content-type-options": "nosniff",
     },
@@ -177,10 +177,14 @@ const remove = async (req: Request, context: Context) => {
   const row = await findDocument(ctx.buildingId, readDocumentId(context));
 
   if (row.storageKey && !documentBelongsToBuilding(row.storageKey, ctx.buildingId)) throw new HttpError(409, "Clé de stockage invalide");
-  await db.delete(documents).where(and(eq(documents.id, row.id), eq(documents.buildingId, ctx.buildingId)));
+  // Erase the file first: a failed erasure keeps the record so the removal can be retried.
   if (row.storageKey) {
-    await documentStore().delete(row.storageKey).catch((error) => console.error("Suppression du fichier impossible:", error));
+    try { await documentStore().delete(row.storageKey); } catch (error) {
+      console.error("Suppression du fichier impossible:", error);
+      throw new HttpError(502, "Le fichier n'a pas pu être supprimé. Le document est conservé ; réessayez.");
+    }
   }
+  await db.delete(documents).where(and(eq(documents.id, row.id), eq(documents.buildingId, ctx.buildingId)));
 
   await writeAudit(ctx, {
     action: "document.deleted",

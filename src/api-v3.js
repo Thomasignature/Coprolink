@@ -1,15 +1,22 @@
-import { ApiError } from './api.js'
+import { ApiError, NETWORK_ERROR } from './api.js'
 
 const request = async (path, { method = 'GET', body } = {}) => {
-  const response = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  })
+  let response
+  try {
+    response = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers: body === undefined ? {} : { 'content-type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    })
+  } catch {
+    throw new ApiError(0, NETWORK_ERROR)
+  }
   if (response.status === 204) return null
   const payload = await response.json().catch(() => null)
   if (!response.ok) throw new ApiError(response.status, payload?.error || `Erreur ${response.status}`)
+  // The SPA fallback answers unknown routes with index.html (200): never treat it as data.
+  if (!(response.headers.get('content-type') || '').includes('json')) throw new ApiError(502, 'Réponse inattendue du serveur. Réessayez.')
   return payload
 }
 

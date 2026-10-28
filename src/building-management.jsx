@@ -60,6 +60,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
 
   const [state, setState] = useState({ status: 'loading', workspace: null, model: null, access: [], error: null })
   const [section, setSection] = useState('overview')
+  const [adding, setAdding] = useState(false)
   const [query, setQuery] = useState('')
   const [peopleFilter, setPeopleFilter] = useState('current')
   const [endingRow, setEndingRow] = useState(null)
@@ -205,7 +206,9 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
   const addPerson = async event => {
     event.preventDefault()
     if (!isSyndicOperator) return
-    if (!clean(draft.fullName)) return
+    if (!clean(draft.fullName) || adding) return
+    // Several sequential writes: block double submits and reload after a partial failure.
+    setAdding(true)
     setActionError('')
     try {
       let unit = units.find(item => clean(item.label).toLocaleLowerCase('fr-BE') === clean(draft.unitLabel).toLocaleLowerCase('fr-BE')) || null
@@ -226,7 +229,8 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
       await load()
     } catch (error) {
       setActionError(error.message || 'Impossible d’ajouter cette personne.')
-    }
+      await load()
+    } finally { setAdding(false) }
   }
 
   return (
@@ -299,7 +303,7 @@ export default function BuildingManagementView({ session, buildingSlug, onLogout
                   <label>Lien avec le lot<select value={draft.relationPreset} onChange={event => setDraft(value => ({ ...value, relationPreset: event.target.value }))}>{Object.entries(RELATION_PRESETS).map(([key, value]) => <option value={key} key={key}>{value.label}</option>)}</select></label>
                 </div>
                 <div className="bm-add-options"><label><input type="checkbox" checked={draft.directoryVisible} onChange={event => setDraft(value => ({ ...value, directoryVisible: event.target.checked }))} /> Visible dans l’annuaire privé</label><label><input type="checkbox" checked={draft.hallVisible} onChange={event => setDraft(value => ({ ...value, hallVisible: event.target.checked }))} /> Visible sur écran / hall</label><label><input type="checkbox" checked={draft.isReferent} onChange={event => setDraft(value => ({ ...value, isReferent: event.target.checked }))} /> Référent CoproLink</label></div>
-                <div className="bm-form-actions"><button type="button" onClick={() => setShowAdd(false)}>Annuler</button><button className="bm-primary" type="submit"><Check /> Enregistrer</button></div>
+                <div className="bm-form-actions"><button type="button" onClick={() => setShowAdd(false)}>Annuler</button><button className="bm-primary" type="submit" disabled={adding}><Check /> {adding ? 'Enregistrement…' : 'Enregistrer'}</button></div>
               </form>
             )}
 

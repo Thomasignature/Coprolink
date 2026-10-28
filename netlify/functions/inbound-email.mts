@@ -12,7 +12,10 @@ import { writeAudit } from "../lib/data.mts";
 import { verifyResendWebhook, WebhookAuthError } from "../lib/resend-webhook.mts";
 
 const normalizeAddress = (value: unknown) => String(value ?? "").trim().toLowerCase();
-const firstAddress = (value: unknown) => Array.isArray(value) ? normalizeAddress(value[0]) : normalizeAddress(value);
+const recipientAddresses = (...values: unknown[]) => values
+  .flatMap((value) => Array.isArray(value) ? value : value ? [value] : [])
+  .map((value) => { const raw = String(value); return normalizeAddress(raw.match(/<([^>]+)>/)?.[1] ?? raw); })
+  .filter((address) => address.includes("@"));
 const localPart = (address: string) => address.split("@")[0]?.replace(/[^a-z0-9-]/g, "") || "";
 
 const parseSender = (value: unknown) => {
@@ -141,7 +144,7 @@ const createDocumentAction = async (ctx: any, mail: any, body: any, tx: Pick<typ
   await tx.update(inboundEmails).set({ documentActionStatus: "created", documentIdsJson: JSON.stringify(createdIds), documentActionedAt: new Date() }).where(eq(inboundEmails.id, mail.id));
   await writeAudit(ctx, { action: "inbound_email.documents_classified", entityType: "document", entityId: createdIds.join(","),
     summary: `${createdIds.length} pièce(s) jointe(s) archivées depuis « ${mail.subject || "Sans objet"} ».` }, tx);
-  return Response.json({ ok: true, status: "created", documentIds: createdIds, folder }, { status: 201 });
+  return Response.json({ ok: true, status: "created", documentIds: createdIds, folder, skipped: body._skippedAttachments ?? [] }, { status: 201 });
 };
 
 const updateTicketAction = async (ctx: any, mail: any, body: any, tx: Pick<typeof db, "select" | "insert" | "update" | "execute">) => {
@@ -154,7 +157,8 @@ const updateTicketAction = async (ctx: any, mail: any, body: any, tx: Pick<typeo
     .where(and(eq(tickets.reference, reference), eq(tickets.buildingId, ctx.buildingId))).limit(1);
   if (!ticket) return Response.json({ error: `Ticket ${reference} introuvable` }, { status: 404 });
 
-  const note = String(body.note || mail.textBody || mail.subject || "Mise à jour reçue par e-mail").trim().slice(0, 1000);
+  // Never copy the raw e-mail body into a history visible to the reporter.
+  const note = String(body.note || mail.subject || "Mise à jour reçue par e-mail").trim().slice(0, 1000);
   await tx.insert(ticketUpdates).values({
     ticketId: ticket.id,
     label: "Mise à jour reçue par e-mail",
@@ -214,13 +218,23 @@ const prepareAttachments = async (ctx: any, mail: any, body: any) => {
   const files = (payload.data || []).filter((file: any) => !requested.length || requested.includes(file.filename));
   if (!files.length || files.length > 20) throw new HttpError(422, "Sélection de pièces jointes invalide");
   const store = getStore({ name: documentStoreName(Netlify.env.get("CONTEXT") || "dev", Netlify.env.get("BRANCH") || ""), consistency: "strong" });
-  const prepared = [];
+  // Check every file before downloading: an unsupported logo must not block the
+  // archive of the other attachments, and is reported instead of failing forever.
+  const skipped: { name: string; reason: string }[] = [];
+  const accepted = files.filter((file: any) => {
+    const name = String(file.filename || "").slice(0, 160) || "Pièce jointe sans nom";
+    const extension = name.includes(".") ? name.split(".").pop()!.toLowerCase() : "";
+    if (!/^(pdf|png|jpg|jpeg|webp|txt|csv|doc|docx|xls|xlsx|odt|ods)$/.test(extension)) { skipped.push({ name, reason: "format non accepté" }); return false; }
+    if (!Number.isFinite(file.size) || file.size <= 0 || file.size > 4 * 1024 * 1024) { skipped.push({ name, reason: "taille supérieure à 4 Mo ou inconnue" }); return false; }
+    return true;
+  });
+  if (!accepted.length) throw new HttpError(415, `Aucune pièce jointe archivable : ${skipped.map(item => `${item.name} (${item.reason})`).join(", ")}`);
+  const prepared: { name: string; extension: string; storageKey: string }[] = [];
   let totalBytes = 0;
-  for (const file of files) {
+  try {
+  for (const file of accepted) {
     const name = String(file.filename || "").slice(0, 160);
-    const extension = name.split(".").pop()?.toLowerCase() || "";
-    if (!/^(pdf|png|jpg|jpeg|webp|txt|csv|doc|docx|xls|xlsx|odt|ods)$/.test(extension)) throw new HttpError(415, `Format non accepté : ${name}`);
-    if (!Number.isFinite(file.size) || file.size <= 0 || file.size > 4 * 1024 * 1024) throw new HttpError(413, "Chaque pièce jointe doit faire au maximum 4 Mo");
+    const extension = name.split(".").pop()!.toLowerCase();
     const url = new URL(file.download_url);
     if (url.protocol !== "https:" || url.hostname !== "inbound-cdn.resend.com") throw new HttpError(502, "Adresse de téléchargement du fournisseur invalide");
     const response = await fetch(url, { redirect: "error", signal });
@@ -240,7 +254,12 @@ const prepareAttachments = async (ctx: any, mail: any, body: any) => {
     await store.set(storageKey, Uint8Array.from(Buffer.concat(chunks)).buffer);
     prepared.push({ name, extension, storageKey });
   }
-  return prepared;
+  } catch (error) {
+    // No orphan files when a later attachment fails; the e-mail stays re-processable.
+    await Promise.all(prepared.map(item => store.delete(item.storageKey).catch(() => {})));
+    throw error;
+  }
+  return { prepared, skipped };
 };
 
 const executeInboundAction = async (req: Request) => {
@@ -252,7 +271,9 @@ const executeInboundAction = async (req: Request) => {
   const initial = await loadMailForAction(ctx, emailId);
   if (!initial) throw new HttpError(404, "E-mail introuvable");
   // Never trust a client-supplied internal field.
-  body._preparedAttachments = action === "classify_documents" ? await prepareAttachments(ctx, initial, body) : [];
+  const attachments = action === "classify_documents" ? await prepareAttachments(ctx, initial, body) : { prepared: [], skipped: [] };
+  body._preparedAttachments = attachments.prepared;
+  body._skippedAttachments = attachments.skipped;
   return db.transaction(async tx => {
     const [mail] = await tx.select().from(inboundEmails).where(and(eq(inboundEmails.id, emailId), eq(inboundEmails.buildingId, ctx.buildingId))).for("update");
     if (!mail) throw new HttpError(404, "E-mail introuvable");
@@ -279,12 +300,18 @@ const receiveResendWebhook = async (req: Request) => {
   const data = event?.data || {};
   const providerEmailId = String(data.email_id || "").trim();
   if (!providerEmailId) return Response.json({ error: "email_id manquant" }, { status: 422 });
-  const toAddress = firstAddress(data.to);
-  const slug = localPart(toAddress);
-  if (!slug) return Response.json({ error: "Destinataire CoproLink invalide" }, { status: 422 });
+  // Route on every To/Cc recipient, restricted to the inbound domain when configured,
+  // so that a syndic address listed first neither loses the e-mail nor misroutes it.
+  const inboundDomain = (Netlify.env.get("COPROLINK_INBOUND_DOMAIN") || "").trim().toLowerCase().replace(/^@/, "");
+  const candidates = recipientAddresses(data.to, data.cc).filter((address) => !inboundDomain || address.endsWith(`@${inboundDomain}`));
+  const slugs = [...new Set(candidates.map(localPart).filter(Boolean))];
+  if (!slugs.length) return Response.json({ error: "Destinataire CoproLink invalide" }, { status: 422 });
 
-  const [building] = await db.select({ id: buildings.id, slug: buildings.slug }).from(buildings).where(eq(buildings.slug, slug)).limit(1);
-  if (!building) return Response.json({ error: `Aucune copropriété ne correspond à ${slug}` }, { status: 404 });
+  const matched = await db.select({ id: buildings.id, slug: buildings.slug }).from(buildings).where(inArray(buildings.slug, slugs));
+  if (!matched.length) return Response.json({ error: "Aucune copropriété ne correspond aux destinataires" }, { status: 404 });
+  if (matched.length > 1) return Response.json({ error: "Plusieurs copropriétés correspondent aux destinataires ; e-mail non classé" }, { status: 409 });
+  const [building] = matched;
+  const toAddress = candidates.find((address) => localPart(address) === building.slug) ?? candidates[0];
 
   const [existing] = await db.select({ id: inboundEmails.id }).from(inboundEmails)
     .where(and(eq(inboundEmails.provider, "resend"), eq(inboundEmails.providerEmailId, providerEmailId))).limit(1);

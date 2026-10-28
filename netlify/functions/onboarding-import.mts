@@ -6,7 +6,7 @@ import {
 } from "../../db/schema-v3.js";
 import { buildings } from "../../db/schema.js";
 import { authorizeSyndicOperator, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
-import { matchImportPerson } from "../lib/import-matching.mts";
+import { assertSameImportPerson, matchImportPerson } from "../lib/import-matching.mts";
 import { writeAudit } from "../lib/data.mts";
 
 const PRESETS: Record<string, string[]> = {
@@ -41,7 +41,7 @@ export default async (req: Request) => {
 
       if (!unitLabel || !fullName || !Object.hasOwn(PRESETS, preset) || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
         result.skipped += 1;
-        result.errors.push({ row: sourceRow, message: "Lot, nom ou rôle invalide" });
+        result.errors.push({ row: sourceRow, message: email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? "Adresse e-mail invalide" : "Lot, nom ou rôle invalide" });
         continue;
       }
 
@@ -71,14 +71,19 @@ export default async (req: Request) => {
         if (email) {
           [person] = await tx.select().from(buildingPeople)
             .where(and(eq(buildingPeople.buildingId, ctx.buildingId), sql`lower(${buildingPeople.email}) = ${email}`)).limit(1);
+          if (person) assertSameImportPerson(person, fullName);
         }
-        if (!person && !email) {
+        if (!person) {
           const candidates = await tx.select({
             id: buildingPeople.id, fullName: buildingPeople.fullName, email: buildingPeople.email,
           }).from(buildingPeople).innerJoin(unitPersonRelations, eq(unitPersonRelations.personId, buildingPeople.id))
             .where(and(eq(buildingPeople.buildingId, ctx.buildingId), eq(unitPersonRelations.unitId, unit.id),
               sql`${unitPersonRelations.endDate} IS NULL`));
-          person = matchImportPerson(candidates, fullName);
+          // With an e-mail, only a homonym still without address can receive it.
+          person = matchImportPerson(candidates, fullName, { withoutEmailOnly: Boolean(email) });
+          if (person && email) {
+            [person] = await tx.update(buildingPeople).set({ email, updatedAt: new Date() }).where(eq(buildingPeople.id, person.id)).returning();
+          }
         }
         if (!person) {
           [person] = await tx.insert(buildingPeople).values({
@@ -109,7 +114,10 @@ export default async (req: Request) => {
         result.relationsCreated += counts.relationsCreated;
       } catch (error: any) {
         result.skipped += 1;
-        result.errors.push({ row: sourceRow, message: error?.message || "Erreur d’import" });
+        // Only our own validation messages are shown; database errors stay in the logs.
+        const ownMessage = error instanceof HttpError || (error instanceof Error && error.constructor === Error && !("code" in error));
+        if (!ownMessage) console.error("Ligne d’import en erreur:", error);
+        result.errors.push({ row: sourceRow, message: ownMessage ? error.message : "Erreur d’enregistrement de cette ligne. Réessayez ou corrigez-la manuellement." });
       }
     }
 

@@ -85,7 +85,7 @@ const analyseMail = mail => {
   const eventDate = parseDate(fullText)
   const times = parseTimes(fullText)
   const ticketRef = fullText.match(/\bT-\d{4,}\b/i)?.[0]?.toUpperCase() || null
-  const files = (mail.attachments || []).map(item => item.filename || item.name || item.content_disposition || 'Pièce jointe').slice(0, 8)
+  const files = (mail.attachments || []).map(item => item.filename || item.name || 'Pièce jointe sans nom')
   const summarySource = body.replace(/\s+/g, ' ')
   const summary = (summarySource.split(/(?<=[.!?])\s+/)[0] || mail.subject || '(Sans objet)').slice(0, 240)
   return { body, classification, eventDate, times, ticketRef, files, summary }
@@ -139,13 +139,17 @@ export default function InboxAIView({ session, onLogout }) {
     attachments: emails.reduce((sum, item) => sum + item.analysis.files.length, 0),
   }), [emails])
 
+  // The ticket note is shown to the reporter: the syndic reviews it instead of the raw e-mail body.
+  const [ticketNotes, setTicketNotes] = useState({})
+
   const runAction = async (mail, key, data) => {
     if (!mail || actionState.key) return
     setActionState({ key: `${mail.id}:${key}`, error: '' })
     try {
-      await apiV3.executeInboundAction(buildingSlug, { emailId: mail.id, action: key, ...data })
+      const result = await apiV3.executeInboundAction(buildingSlug, { emailId: mail.id, action: key, ...data })
       await load()
-      setActionState({ key: '', error: '' })
+      const skipped = result?.skipped?.length ? `Non archivé : ${result.skipped.map(item => `${item.name} (${item.reason})`).join(', ')}. Déposez ces fichiers depuis Documents si nécessaire.` : ''
+      setActionState({ key: '', error: '', notice: skipped })
     } catch (error) {
       setActionState({ key: '', error: error.message || 'Impossible d’exécuter cette action.' })
     }
@@ -201,11 +205,12 @@ export default function InboxAIView({ session, onLogout }) {
 
               {selected.analysis.files.length > 0 && <article className={`ai-action ${selected.documentIds?.length ? 'executed' : 'review'}`}><span className="ai-action-icon"><FolderCheck /></span><div><strong>Classer {selected.analysis.files.length} pièce(s) jointe(s)</strong><p>{selected.analysis.files.join(', ')} → {folderFor(`${selected.subject}\n${selected.analysis.body}`)}</p><small>Les fichiers seront archivés dans Documents (4 Mo maximum par fichier).</small></div><span className={`ai-action-status ${selected.documentIds?.length ? 'executed' : 'review'}`}>{selected.documentIds?.length ? 'Classé' : 'À valider'}</span>{!selected.documentIds?.length && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'classify_documents')} onClick={() => runAction(selected, 'classify_documents', { files: selected.analysis.files, folder: folderFor(`${selected.subject}\n${selected.analysis.body}`) })}><FolderCheck /> {busy(selected, 'classify_documents') ? 'Classement…' : 'Classer dans Documents'}</button></div>}</article>}
 
-              {selected.analysis.ticketRef && <article className={`ai-action ${selected.ticketActionStatus === 'created' ? 'executed' : 'review'}`}><span className="ai-action-icon"><TicketCheck /></span><div><strong>Mettre à jour {selected.analysis.ticketRef}</strong><p>{selected.analysis.summary}</p></div><span className={`ai-action-status ${selected.ticketActionStatus === 'created' ? 'executed' : 'review'}`}>{selected.ticketActionStatus === 'created' ? 'Mis à jour' : 'À valider'}</span>{selected.ticketActionStatus !== 'created' && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'update_ticket')} onClick={() => runAction(selected, 'update_ticket', { reference: selected.analysis.ticketRef, note: selected.analysis.body.slice(0, 1000) })}><TicketCheck /> {busy(selected, 'update_ticket') ? 'Mise à jour…' : 'Valider la mise à jour'}</button></div>}</article>}
+              {selected.analysis.ticketRef && <article className={`ai-action ${selected.ticketActionStatus === 'created' ? 'executed' : 'review'}`}><span className="ai-action-icon"><TicketCheck /></span><div><strong>Mettre à jour {selected.analysis.ticketRef}</strong><p>{selected.analysis.summary}</p>{selected.ticketActionStatus !== 'created' && <label style={{display:'grid',gap:'4px',fontSize:'12px',marginTop:'6px'}}>Note ajoutée à l’historique (visible par l’auteur du signalement)<textarea rows={3} maxLength={1000} value={ticketNotes[selected.id] ?? selected.analysis.summary} onChange={event => setTicketNotes(notes => ({ ...notes, [selected.id]: event.target.value }))} /></label>}</div><span className={`ai-action-status ${selected.ticketActionStatus === 'created' ? 'executed' : 'review'}`}>{selected.ticketActionStatus === 'created' ? 'Mis à jour' : 'À valider'}</span>{selected.ticketActionStatus !== 'created' && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'update_ticket')} onClick={() => runAction(selected, 'update_ticket', { reference: selected.analysis.ticketRef, note: (ticketNotes[selected.id] ?? selected.analysis.summary).slice(0, 1000) })}><TicketCheck /> {busy(selected, 'update_ticket') ? 'Mise à jour…' : 'Valider la mise à jour'}</button></div>}</article>}
 
               {['intervention', 'meeting', 'information'].includes(selected.analysis.classification.key) && <article className={`ai-action ${selected.announcementId ? 'executed' : 'review'}`}><span className="ai-action-icon"><MessageSquareText /></span><div><strong>Publier une information aux copropriétaires</strong><p>{selected.analysis.summary}</p><small>Publication dans l’app uniquement par défaut.</small></div><span className={`ai-action-status ${selected.announcementId ? 'executed' : 'review'}`}>{selected.announcementId ? 'Publiée' : 'À valider'}</span>{!selected.announcementId && <div className="ai-action-buttons"><button className="approve" disabled={busy(selected, 'publish_announcement')} onClick={() => runAction(selected, 'publish_announcement', { title: selected.subject || 'Information', body: selected.analysis.summary, priority: selected.analysis.classification.key === 'intervention' ? 'important' : 'normal', isPublic: false })}><MessageSquareText /> {busy(selected, 'publish_announcement') ? 'Publication…' : 'Valider et publier'}</button></div>}</article>}
             </div>
-            {actionState.error && <p style={{color:'#9a4f48',fontSize:'10px',margin:'10px 2px'}}>{actionState.error}</p>}
+            {actionState.error && <p role="alert" style={{color:'#9a4f48',fontSize:'13px',margin:'10px 2px'}}>{actionState.error}</p>}
+            {actionState.notice && <p role="status" style={{color:'#6b5a2e',fontSize:'13px',margin:'10px 2px'}}>{actionState.notice}</p>}
             <div className="ai-output-section"><div className="ai-output-heading"><Mail /><strong>Contenu reçu</strong><span>{selected.processingStatus === 'content_ready' ? 'OK' : '…'}</span></div><p className="ai-mini-empty" style={{fontSize:'10px',lineHeight:'1.6',whiteSpace:'pre-wrap'}}>{selected.analysis.body || 'Le corps du mail n’a pas encore pu être récupéré depuis Resend.'}</p></div></> : <div className="ai-result-empty"><Sparkles /><p>Envoie un mail à l’adresse de la copropriété pour le voir apparaître ici.</p></div>}
           </section></div>
         </section>

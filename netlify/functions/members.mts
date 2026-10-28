@@ -114,7 +114,7 @@ export default async (req: Request, context: Context) => {
           });
 
           await writeAudit(ctx, { action: "member.invited", entityType: "building_member", entityId: member.id, summary: `${pending.email} invité avec le rôle « ${member.role} ».` });
-          return Response.json({ id: member.id, email: pending.email, role: member.role, invited: true, pending: false, message: `Invitation envoyée à ${pending.email}.` });
+          return Response.json({ id: member.id, email: pending.email, role: member.role, invited: true, pending: false, message: `Invitation demandée à Netlify Identity pour ${pending.email}. La réception n’est pas confirmée.` });
         } catch (error) {
           if (error instanceof IdentityEmailTakenError) {
             await sendPendingAccessLink(pending.email);
@@ -128,8 +128,8 @@ export default async (req: Request, context: Context) => {
               id: pending.id,
               email: pending.email,
               pending: true,
-              activationEmailSent: true,
-              message: `Lien d'accès envoyé à ${pending.email}. L'accès sera activé automatiquement à sa première connexion.`,
+              activationEmailRequested: true,
+              message: `Lien d'accès demandé à Netlify Identity pour ${pending.email}. La réception n'est pas confirmée ; l'accès sera activé automatiquement à sa première connexion.`,
             });
           }
 
@@ -148,7 +148,7 @@ export default async (req: Request, context: Context) => {
               pending: true,
               activationEmailRequested: true,
               message:
-                `Demande de lien d'accès envoyée à ${pending.email}. ` +
+                `Lien d'accès demandé à Netlify Identity pour ${pending.email} (réception non confirmée). ` +
                 `Si le compte existe déjà, la personne recevra un e-mail pour choisir son mot de passe. ` +
                 `L'accès sera activé à sa première connexion.`,
             });
@@ -220,7 +220,11 @@ export default async (req: Request, context: Context) => {
       const member = await grantMembership(ctx.buildingId, email, account, membership);
       await writeAudit(ctx, { action: invited ? "member.invited" : "member.granted", entityType: "building_member", entityId: member.id, summary: invited ? `${email} invité avec le rôle « ${role} ».` : `Accès « ${role} » accordé à ${email}.` });
 
-      return Response.json({ id: member.id, email, role: member.role, unitLabel: member.unitLabel, invited, pending: false, activated: account.activated, message: invited ? `Invitation envoyée à ${email}. La personne choisira son mot de passe depuis le lien reçu.` : `Accès accordé à ${email}.` }, { status: 201 });
+      return Response.json({ id: member.id, email, role: member.role, unitLabel: member.unitLabel, invited, pending: false, activated: account.activated, message: invited
+        ? `Invitation demandée à Netlify Identity pour ${email}. La réception n'est pas confirmée ; la personne choisira son mot de passe depuis le lien reçu.`
+        : account.activated
+          ? `Accès accordé à ${email}. Aucun e-mail envoyé : la personne utilise son compte existant.`
+          : `Accès accordé à ${email}, mais ce compte n'est pas encore activé et aucun e-mail n'a été envoyé. Utilisez « Renvoyer le lien ».` }, { status: 201 });
     }
 
     const memberId = Number(context.params.id);
@@ -262,7 +266,7 @@ export default async (req: Request, context: Context) => {
         }
 
         await writeAudit(ctx, { action: "member.reinvited", entityType: "building_member", entityId: target.id, summary: `Lien d'activation renvoyé à ${account.email}.` });
-        return Response.json({ id: target.id, email: account.email, invited: false, activationEmailSent: true, message: `Lien d'activation envoyé à ${account.email}. La personne pourra choisir son mot de passe depuis le lien reçu.` });
+        return Response.json({ id: target.id, email: account.email, invited: false, activationEmailRequested: true, message: `Lien d'activation demandé à Netlify Identity pour ${account.email}. La réception n'est pas confirmée ; la personne pourra choisir son mot de passe depuis le lien reçu.` });
       }
 
       const role = assertAssignableRole(body.role ?? target.role);

@@ -6,6 +6,7 @@ import {
 } from "../../db/schema-v3.js";
 import { authorize, authorizeSyndicOperator, HttpError, jsonError, readBuildingSlug } from "../lib/auth.mts";
 import { readString, writeAudit } from "../lib/data.mts";
+import { businessDate, isIsoDate } from "../lib/lifecycle-policy.mts";
 
 const RESPONSE_TYPES = ["present", "absent", "proxy"] as const;
 type ResponseType = (typeof RESPONSE_TYPES)[number];
@@ -139,6 +140,7 @@ export default async (req: Request) => {
     if (action === "create_assembly") {
       const syndic = await authorizeSyndicOperator(req, buildingSlug);
       const assemblyDate = readString(body.assemblyDate, "date", { max: 10 });
+      if (!isIsoDate(assemblyDate)) throw new HttpError(422, "Date attendue au format AAAA-MM-JJ");
       const [created] = await db.insert(generalAssemblies).values({
         buildingId: syndic.buildingId,
         title: readString(body.title || "Assemblée générale", "titre", { max: 180 }),
@@ -171,6 +173,7 @@ export default async (req: Request) => {
       const assemblyId = readPositiveId(body.assemblyId, "assemblée");
       const assembly = await getAssembly(ctx.buildingId, assemblyId);
       if (assembly.archivedAt || assembly.status === "archived") throw new HttpError(409, "Cette assemblée est archivée");
+      if (String(assembly.assemblyDate) < businessDate()) throw new HttpError(409, "Cette assemblée est passée : la participation ne peut plus être modifiée");
       const [person] = await db.select().from(buildingPeople)
         .where(and(eq(buildingPeople.buildingId, ctx.buildingId), eq(buildingPeople.userId, ctx.principal.userId))).limit(1);
       if (!person) throw new HttpError(422, "Votre compte n’est pas encore lié à une personne de l’immeuble");
