@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { handleAuthCallback, logout, onAuthChange } from '@netlify/identity'
 import { api, ApiError, terminalToken } from './api.js'
-import { LoginView, NoAccessView, SetupView, TerminalEnrollView } from './auth-views.jsx'
-import { DisplayView, ErrorPanel, ResidentView, Spinner, SyndicView } from './views.jsx'
+import { LINK_INVALID_MESSAGE, LoginView, NoAccessView, SetupView, TerminalEnrollView } from './auth-views.jsx'
+import { DisplayView, ErrorPanel, Spinner, SyndicView } from './views.jsx'
+import ManagerPortfolioView from './manager-portfolio.jsx'
+import ResidentV2View from './resident-v2.jsx'
+import BuildingManagementView from './building-management.jsx'
 
 /* ------------------------------------------------------------------ *
  * Routage par hash.
@@ -30,7 +33,7 @@ const useRoute = () => {
 }
 
 /** Espace naturel d'un membre selon son rôle sur l'immeuble. */
-const homeFor = role => (role === 'manager' || role === 'platform_admin' ? '/syndic' : '/resident')
+const homeFor = role => (role === 'manager' || role === 'platform_admin' ? '/portfolio' : '/resident')
 
 function Toast({ message }) {
   if (!message) return null
@@ -55,12 +58,10 @@ const useToast = () => {
 
 export default function App() {
   const route = useRoute()
+  const routeBuilding = route.params.get('building')
   const [toast, setToast] = useToast()
 
-  // Jetons Identity (confirmation, invitation, récupération) arrivant dans le
-  // hash. Traités avant tout routage, sinon le hash serait interprété comme une
-  // route inconnue.
-  const [authCallback, setAuthCallback] = useState({ done: false, mode: null, inviteToken: null })
+  const [authCallback, setAuthCallback] = useState({ done: false, mode: null, inviteToken: null, linkError: '' })
   const [session, setSession] = useState({ status: 'loading', data: null, error: null })
 
   const loadSession = useCallback(async () => {
@@ -79,35 +80,43 @@ export default function App() {
     ;(async () => {
       let mode = null
       let inviteToken = null
+      let linkError = ''
       try {
         const result = await handleAuthCallback()
-        // Récupération : la session est ouverte mais le mot de passe doit être
-        // remplacé. Invitation : aucune session, un mot de passe doit être créé.
         if (result?.type === 'recovery') mode = 'reset'
         if (result?.type === 'invite') { mode = 'invite'; inviteToken = result.token ?? null }
-      } catch (error) {
-        if (!cancelled) setToast(error?.message || 'Ce lien d\'authentification est invalide ou expiré.')
+      } catch {
+        // The library keeps the failing token in the URL: drop it so a reload does
+        // not replay the error, and offer to request a fresh link instead.
+        try { history.replaceState(null, '', location.pathname + location.search) } catch { /* ignore */ }
+        mode = 'forgot'
+        linkError = LINK_INVALID_MESSAGE
       }
       if (cancelled) return
-      setAuthCallback({ done: true, mode, inviteToken })
+      setAuthCallback({ done: true, mode, inviteToken, linkError })
       await loadSession()
     })()
     return () => { cancelled = true }
   }, [loadSession, setToast])
 
-  // Une déconnexion dans un autre onglet doit vider cet onglet aussi.
   useEffect(() => onAuthChange(event => {
     if (event === 'logout' || event === 'login') loadSession()
   }), [loadSession])
 
+  // Après la création d'une copropriété, le backend rattache immédiatement le
+  // compte au nouvel immeuble. On recharge donc la session lors de l'ouverture
+  // d'un immeuble du portefeuille afin que ce nouveau rôle soit visible sans
+  // devoir se déconnecter/reconnecter.
+  useEffect(() => {
+    if (route.path === 'portfolio' && routeBuilding) loadSession()
+  }, [loadSession, route.path, routeBuilding])
+
   const onLogout = useCallback(async () => {
-    try { await logout() } catch { /* la session locale est purgée quand même */ }
+    try { await logout() } catch { /* session locale purgée quand même */ }
     setSession({ status: 'ready', data: { authenticated: false }, error: null })
     go('/')
   }, [])
 
-  // La vue des communs est indépendante de toute session utilisateur : elle
-  // n'attend donc pas la résolution de la session.
   if (route.path === 'display') {
     return (
       <>
@@ -132,9 +141,10 @@ export default function App() {
         <LoginView
           mode={authCallback.mode ?? (route.path === 'signup' ? 'signup' : 'login')}
           inviteToken={authCallback.inviteToken}
+          initialError={authCallback.linkError || ''}
           onAuthenticated={async () => {
             const ok = await loadSession()
-            if (ok) setAuthCallback(c => ({ ...c, mode: null, inviteToken: null }))
+            if (ok) setAuthCallback(c => ({ ...c, mode: null, inviteToken: null, linkError: '' }))
             return ok
           }}
         />
@@ -165,6 +175,25 @@ export default function App() {
     )
   }
 
+  const managesBuildings = data.user.isPlatformAdmin || data.memberships.some(m => m.role === 'manager')
+  const isBuildingReferent = data.memberships.some(m => m.isReferent === true)
+  const wantsPortfolio = managesBuildings && (route.path === '' || route.path === 'portfolio')
+
+  if (!managesBuildings && isBuildingReferent && (route.path === '' || route.path === 'portfolio')) {
+    const referentBuilding = data.memberships.find(m => m.isReferent && (!routeBuilding || m.buildingSlug === routeBuilding))
+    if (!referentBuilding) return <ErrorPanel title="Accès refusé" message="Vous n’êtes pas référent de cet immeuble." />
+    return <BuildingManagementView session={data} buildingSlug={referentBuilding.buildingSlug} onLogout={onLogout} />
+  }
+
+  if (wantsPortfolio) {
+    return (
+      <>
+        <ManagerPortfolioView session={data} onLogout={onLogout} setToast={setToast} />
+        <Toast message={toast} />
+      </>
+    )
+  }
+
   return (
     <>
       <MemberRoutes route={route} session={data} onLogout={onLogout} setToast={setToast} />
@@ -174,7 +203,7 @@ export default function App() {
 }
 
 /* ------------------------------------------------------------------ *
- * Espaces authentifiés.
+ * Espaces authentifiés par immeuble.
  * ------------------------------------------------------------------ */
 
 function MemberRoutes({ route, session, onLogout, setToast }) {
@@ -185,6 +214,8 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
     [memberships, requested],
   )
   const slug = membership.buildingSlug
+  const residentSection = route.path.startsWith('resident/') ? route.path.slice('resident/'.length) : 'overview'
+  const navigateResident = section => go(`/resident${section === 'overview' ? '' : `/${section}`}?building=${encodeURIComponent(slug)}`)
 
   const [workspace, setWorkspace] = useState({ status: 'loading', data: null, error: null })
 
@@ -200,23 +231,29 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
 
   useEffect(() => { load() }, [load])
 
-  /**
-   * Mutations. Chacune recharge l'espace de travail : le serveur reste seul
-   * juge de ce que le porteur a le droit de voir après le changement.
-   */
   const actions = useMemo(() => ({
     createTicket: async payload => {
       const ticket = await api.createTicket(slug, payload)
       await load()
       return ticket
     },
-    updateTicketStatus: async (reference, status) => {
-      const ticket = await api.updateTicketStatus(slug, reference, status)
+    updateTicketStatus: async (reference, status, schedule = {}) => {
+      const ticket = await api.updateTicketStatus(slug, reference, status, '', schedule)
       await load()
       return ticket
     },
     publishAnnouncement: async payload => { await api.publishAnnouncement(slug, payload); await load() },
+    updateAnnouncement: async (id, payload) => { await api.updateAnnouncement(slug, id, payload); await load() },
+    deleteAnnouncement: async id => { await api.deleteAnnouncement(slug, id); await load() },
     createEvent: async payload => { await api.createEvent(slug, payload); await load() },
+    updateEvent: async (id, payload) => { await api.updateEvent(slug, id, payload); await load() },
+    deleteEvent: async id => { await api.deleteEvent(slug, id); await load() },
+    uploadDocument: async form => { await api.uploadDocument(slug, form); await load() },
+    updateDocument: async (id, payload) => { await api.updateDocument(slug, id, payload); await load() },
+    deleteDocument: async id => { await api.deleteDocument(slug, id); await load() },
+    finances: () => api.finances(slug),
+    updateBuildingFinances: async figures => { const data = await api.updateBuildingFinances(slug, figures); await load(); return data },
+    updateMemberFinances: (id, payload) => api.updateMemberFinances(slug, id, payload),
     listTerminals: () => api.listTerminals(slug),
     createTerminal: payload => api.createTerminal(slug, payload),
     setTerminalReporting: (id, canReport) => api.setTerminalReporting(slug, id, canReport),
@@ -231,19 +268,12 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
   }), [slug, load])
 
   if (workspace.status === 'loading') return <Spinner label="Chargement de l'immeuble…" />
-  if (workspace.status === 'error') {
-    return <ErrorPanel title="Immeuble inaccessible" message={workspace.error} onRetry={load} />
-  }
+  if (workspace.status === 'error') return <ErrorPanel title="Immeuble inaccessible" message={workspace.error} onRetry={load} />
 
-  const data = workspace.data
-  const isManager = data.capabilities.includes('tickets:update')
-  // Une racine sans espace explicite mène à l'espace correspondant au rôle
-  // réellement accordé sur cet immeuble.
-  const wants = route.path === 'syndic' || (route.path !== 'resident' && isManager)
-    ? 'syndic'
-    : 'resident'
+  const workspaceData = workspace.data
+  const isManager = workspaceData.capabilities.includes('tickets:update')
+  const wants = route.path === 'syndic' || (route.path !== 'resident' && isManager) ? 'syndic' : 'resident'
 
-  // Garde de route : la capacité renvoyée par le serveur décide, pas l'URL.
   if (wants === 'syndic' && !isManager) {
     return (
       <ErrorPanel
@@ -258,16 +288,16 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
   if (wants === 'syndic') {
     return (
       <SyndicView
-        data={data} session={session} actions={actions}
+        data={workspaceData} session={session} actions={actions}
         onLogout={onLogout} setToast={setToast}
       />
     )
   }
 
   return (
-    <ResidentView
-      data={data} session={session} setToast={setToast} onLogout={onLogout}
-      onReport={actions.createTicket}
+    <ResidentV2View
+      data={workspaceData} session={session} setToast={setToast} onLogout={onLogout}
+      onReport={actions.createTicket} initialSection={residentSection} onNavigate={navigateResident}
     />
   )
 }
@@ -276,11 +306,6 @@ function MemberRoutes({ route, session, onLogout, setToast }) {
  * Écran des communs.
  * ------------------------------------------------------------------ */
 
-/**
- * Mode tablette. Le jeton arrive une seule fois par l'URL d'enrôlement
- * (`#/display?token=…`), est stocké sur l'appareil, puis retiré de l'URL pour
- * ne pas rester lisible à l'écran ni dans l'historique.
- */
 function TerminalRoute({ route, setToast }) {
   const urlToken = route.params.get('token')
   const [state, setState] = useState({ status: 'loading', data: null, error: null })
@@ -301,8 +326,6 @@ function TerminalRoute({ route, setToast }) {
       const data = await api.display()
       setState({ status: 'ready', data, error: null })
     } catch (error) {
-      // Un jeton révoqué ou invalide est effacé : la tablette redemande un
-      // enrôlement plutôt que de boucler sur une erreur.
       if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
         terminalToken.clear()
         setState({ status: 'enroll', data: null, error: error.message })
@@ -329,9 +352,7 @@ function TerminalRoute({ route, setToast }) {
     )
   }
 
-  if (state.status === 'error') {
-    return <ErrorPanel title="Écran hors ligne" message={state.error} onRetry={load} />
-  }
+  if (state.status === 'error') return <ErrorPanel title="Écran hors ligne" message={state.error} onRetry={load} />
 
   return (
     <DisplayView

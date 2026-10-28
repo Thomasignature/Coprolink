@@ -1,5 +1,6 @@
 import { admin, getIdentityConfig, type User } from "@netlify/identity";
 import { HttpError } from "./auth.mts";
+import { RecoveryAccountMissingError, resolveRecoveryRecipient } from "./recovery-recipient.mts";
 
 /**
  * Administration des comptes Netlify Identity.
@@ -45,7 +46,7 @@ const MAX_PAGES = 20;
 
 const toAccount = (user: User): IdentityAccount => ({
   id: user.id,
-  email: (user.email ?? "").toLowerCase(),
+  email: user.email ?? "",
   fullName: user.name ?? (user.userMetadata?.full_name as string | undefined) ?? "",
   activated: Boolean(user.confirmedAt),
 });
@@ -92,7 +93,7 @@ const listIdentityUsers = async (): Promise<User[]> => {
 };
 
 export const findAccountByEmail = async (email: string): Promise<IdentityAccount | null> => {
-  const needle = email.toLowerCase();
+  const needle = email.trim().toLowerCase();
   const match = (await listIdentityUsers()).find((u) => (u.email ?? "").toLowerCase() === needle);
   return match ? toAccount(match) : null;
 };
@@ -124,13 +125,20 @@ export const listActivationStates = async (): Promise<Map<string, boolean>> => {
  */
 export const sendAccountActivationLink = async (email: string): Promise<void> => {
   const url = requireIdentityUrl();
+  let recipient: string;
+  try {
+    recipient = await resolveRecoveryRecipient(email, findAccountByEmail);
+  } catch (error) {
+    if (error instanceof RecoveryAccountMissingError) throw new HttpError(422, error.message);
+    throw error;
+  }
 
   let response: Response;
   try {
     response = await fetch(`${url}/recover`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email }),
+      body: JSON.stringify({ email: recipient }),
     });
   } catch (error) {
     throw new IdentityAdminUnavailableError(describeFailure(error));
@@ -170,6 +178,8 @@ export const inviteAccount = async (email: string, fullName: string): Promise<Id
     const detail = (await response.json().catch(() => null)) as { msg?: string } | null;
     const message = detail?.msg ?? "";
 
+    if (response.status === 429 || /rate limit|too many/i.test(message)) throw new IdentityRateLimitError();
+
     if (/already|exist|registered|taken/i.test(message)) throw new IdentityEmailTakenError(email);
 
     if (response.status === 401 || response.status === 403 || response.status >= 500) {
@@ -183,7 +193,7 @@ export const inviteAccount = async (email: string, fullName: string): Promise<Id
   if (typeof created?.id === "string") {
     return {
       id: created.id,
-      email: typeof created.email === "string" ? created.email.toLowerCase() : email,
+      email: typeof created.email === "string" ? created.email : email,
       fullName,
       activated: false,
     };
