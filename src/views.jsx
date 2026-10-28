@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import { api } from './api.js'
 import SyndicPeopleAccess from './syndic-people-access.jsx'
+import MemberEmailEditor from './member-email-editor.jsx'
 import { dayAndTime, dayNumber, longDate, metaFor, money, monthShort, roleLabel, shortDate, statusMeta, timelineDate } from './format.js'
 
 export function Logo({ compact = false }) {
@@ -792,7 +793,7 @@ export function SyndicView({ data, session, actions, onLogout, setToast }) {
           )}
           {section === 'finance' && <SyndicFinance actions={actions} setToast={setToast} />}
           {section === 'terminals' && <TerminalsPanel actions={actions} setToast={setToast} />}
-          {section === 'members' && <MembersPanel buildingSlug={data.building.slug} actions={actions} setToast={setToast} />}
+          {section === 'members' && <MembersPanel key={data.building.slug} buildingSlug={data.building.slug} actions={actions} setToast={setToast} />}
         </div>
       </section>
       {current && <SyndicTicketDrawer ticket={current} onClose={() => setSelected(null)} changeStatus={changeStatus} />}
@@ -1347,6 +1348,7 @@ function MembersPanel({ buildingSlug, actions, setToast }) {
   const [busy, setBusy] = useState(false)
   // One row action at a time: a double click must not send two Identity e-mails.
   const [rowBusy, setRowBusy] = useState(null)
+  const [accessRevision, setAccessRevision] = useState(0)
   const runRow = async (key, action) => {
     if (rowBusy) return
     setRowBusy(key)
@@ -1357,6 +1359,7 @@ function MembersPanel({ buildingSlug, actions, setToast }) {
     setState(s => ({ ...s, loading: true }))
     try {
       const data = await actions.listMembers()
+      setAccessRevision(value => value + 1)
       setState({
         loading: false,
         error: null,
@@ -1416,7 +1419,7 @@ function MembersPanel({ buildingSlug, actions, setToast }) {
         </span>
       </div>
 
-      <SyndicPeopleAccess buildingSlug={buildingSlug} onAccessChanged={reload} />
+      <SyndicPeopleAccess buildingSlug={buildingSlug} refreshToken={accessRevision} onAccessChanged={reload} />
 
       <section className="card">
         <div className="card-head"><div><span className="overline">Nouvel accès</span><h3>Inviter un copropriétaire</h3></div></div>
@@ -1463,6 +1466,10 @@ function MembersPanel({ buildingSlug, actions, setToast }) {
                   <strong>{p.fullName || p.email}</strong>
                   <small>{p.email} · {roleLabel(p.role)}{p.unitLabel ? ` · ${p.unitLabel}` : ''} · en attente d'activation</small>
                 </div>
+                <MemberEmailEditor member={p} pending disabled={rowBusy !== null} onSave={async email => {
+                  const result = await actions.updatePendingInvite(p.id, { email })
+                  setToast(result.message); await reload()
+                }} />
                 <button
                   className="ghost-btn" disabled={rowBusy !== null}
                   onClick={() => runRow(`pending-${p.id}`, async () => {
@@ -1507,6 +1514,10 @@ function MembersPanel({ buildingSlug, actions, setToast }) {
                         {m.activated === false ? ' · invitation non encore acceptée' : ''}
                       </small>
                     </div>
+                    <MemberEmailEditor member={m} disabled={rowBusy !== null} onSave={async email => {
+                      const result = await actions.updateMember(m.id, { email })
+                      setToast(result.message); await reload()
+                    }} />
                     <button
                         className="ghost-btn" disabled={rowBusy !== null}
                         onClick={() => runRow(`resend-${m.id}`, async () => {

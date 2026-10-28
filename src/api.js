@@ -165,6 +165,8 @@ export const api = {
   /** Nouvelle tentative de création du compte pour une invitation en attente. */
   retryPendingInvite: (slug, pendingId) =>
     request(`/api/members/pending/${pendingId}${buildingQuery(slug)}`, { method: 'PATCH', body: {} }),
+  updatePendingInvite: (slug, pendingId, data) =>
+    request(`/api/members/pending/${pendingId}${buildingQuery(slug)}`, { method: 'PATCH', body: data }),
   cancelPendingInvite: (slug, pendingId) =>
     request(`/api/members/pending/${pendingId}${buildingQuery(slug)}`, { method: 'DELETE' }),
   updateMember: (slug, id, data) =>

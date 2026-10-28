@@ -14,6 +14,7 @@ import {
   type IdentityAccount,
 } from "../lib/identity.mts";
 import { buildingPeople, buildingUnits, unitPersonRelations } from "../../db/schema-v3.js";
+import { changeMemberEmail, validMemberEmail } from "../lib/member-email.mts";
 import { readString, writeAudit } from "../lib/data.mts";
 
 const ASSIGNABLE_ROLES: readonly Role[] = ROLES.filter((r) => r !== "platform_admin");
@@ -106,6 +107,24 @@ export default async (req: Request, context: Context) => {
       }
 
       if (req.method === "PATCH") {
+        const body = await req.json().catch(() => ({}));
+        if (body.email !== undefined) {
+          const email = validMemberEmail(body.email);
+          await db.transaction(async tx => {
+            await tx.select({ id: buildings.id }).from(buildings).where(eq(buildings.id, ctx.buildingId)).for("update");
+            const [current] = await tx.select().from(pendingMembers).where(scope);
+            if (!current || current.email !== pending.email) throw new HttpError(409, "L’invitation a changé. Actualisez la liste.");
+            if (email === current.email.toLowerCase()) return;
+            const duplicates = await tx.select({ id: pendingMembers.id }).from(pendingMembers).where(and(eq(pendingMembers.buildingId, ctx.buildingId), sql`lower(${pendingMembers.email}) = ${email}`));
+            const members = await tx.select({ id: buildingMembers.id }).from(buildingMembers).innerJoin(users, eq(users.id, buildingMembers.userId)).where(and(eq(buildingMembers.buildingId, ctx.buildingId), sql`lower(${users.email}) = ${email}`, isNull(buildingMembers.endedAt)));
+            const people = await tx.select({ id: buildingPeople.id }).from(buildingPeople).where(and(eq(buildingPeople.buildingId, ctx.buildingId), sql`lower(${buildingPeople.email}) = ${email}`));
+            if (duplicates.length || members.length || people.length) throw new HttpError(409, "Cette adresse est déjà utilisée dans cet immeuble");
+            await tx.update(pendingMembers).set({ email, invitationSent: false }).where(scope);
+            await tx.update(buildingPeople).set({ email, updatedAt: new Date() }).where(and(eq(buildingPeople.buildingId, ctx.buildingId), isNull(buildingPeople.userId), sql`lower(${buildingPeople.email}) = ${current.email.toLowerCase()}`));
+          });
+          await writeAudit(ctx, { action: "member.pending_email_changed", entityType: "pending_member", entityId: pending.id, summary: `Adresse de l’invitation corrigée : ${email}.` });
+          return Response.json({ id: pending.id, email, message: "Adresse corrigée. Relancez l’invitation pour demander un nouveau lien." });
+        }
         try {
           const account = await inviteAccount(pending.email, pending.fullName);
           await mirrorAccount(account, pending.email, pending.fullName);
@@ -238,6 +257,12 @@ export default async (req: Request, context: Context) => {
     if (req.method === "PATCH") {
       const body = await req.json().catch(() => ({}));
 
+      if (body.email !== undefined) {
+        const result = await changeMemberEmail(ctx.buildingId, memberId, validMemberEmail(body.email));
+        await writeAudit(ctx, { action: "member.email_changed", entityType: "building_member", entityId: memberId, summary: `Adresse d’accès mise à jour pour ${result.email} dans cet immeuble.` });
+        return Response.json(result);
+      }
+
       if (body.resendInvite === true) {
         const [account] = await db.select({ email: users.email, fullName: users.fullName }).from(users).where(eq(users.id, target.userId)).limit(1);
         if (!account) throw new HttpError(404, "Compte introuvable");
@@ -304,6 +329,8 @@ export default async (req: Request, context: Context) => {
 
     return Response.json({ error: "Méthode non autorisée" }, { status: 405 });
   } catch (error) {
+    if (error instanceof IdentityRateLimitError) return jsonError(new HttpError(429, "Trop de demandes de lien. Réessayez dans quelques minutes ; l’ancien accès est conservé."));
+    if (error instanceof IdentityAdminUnavailableError) return jsonError(new HttpError(503, "Le service d’invitation est indisponible. Aucun transfert d’accès effectué."));
     return jsonError(error);
   }
 };

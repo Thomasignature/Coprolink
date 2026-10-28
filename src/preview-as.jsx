@@ -34,6 +34,7 @@ const makeReadOnlyActions = () => ({
   listMembers: async () => ({ members: [], pendingMembers: [], assignableRoles: [] }),
   inviteMember: readOnlyError,
   resendMemberInvite: readOnlyError,
+  updatePendingInvite: readOnlyError,
   retryPendingInvite: readOnlyError,
   cancelPendingInvite: readOnlyError,
   updateMember: readOnlyError,
